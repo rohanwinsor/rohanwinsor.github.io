@@ -292,7 +292,7 @@
   <p class="version-note">
     <strong>Version scope:</strong> implementation-specific details were reviewed against
     <a href="https://github.com/vllm-project/vllm/releases/tag/v0.22.1">vLLM v0.22.1</a>
-    and its stable documentation on June 13, 2026. vLLM evolves quickly, so treat backend names
+    and its stable documentation on June, 2026. vLLM evolves quickly, so treat backend names
     and defaults as versioned details rather than timeless properties of the architecture.
   </p>
 
@@ -319,7 +319,7 @@
     <a href="https://www.nvidia.com/en-us/data-center/a100/">NVIDIA A100</a>.
     It offers roughly 2&nbsp;TB/s of memory bandwidth and 312 TFLOPS of BF16 tensor math.
     On paper, it should be able to serve tokens at a serious clip.
-    In practice, naïve LLM serving squanders most of that. Two independent inefficiencies in how memory is managed and how work is scheduled are responsible.
+    In practice, naive LLM serving squanders most of that. Two independent inefficiencies in how memory is managed and how work is scheduled are responsible.
   </p>
 
   <p>
@@ -363,17 +363,20 @@
   <h3>Phase 1: Prefill</h3>
 
   <p>
-    You send in a prompt. In an unchunked prefill, the model processes all prompt positions in one
-    forward pass. Self-attention forms an n-by-n attention-score matrix, giving standard dense
-    attention O(n²) work in the sequence length. Prefill is often <strong>compute-bound</strong>:
-    the dense projections operate over many token positions at once, creating large matrix
-    multiplications that use the GPU efficiently. Serving engines may split a long prefill into
-    chunks for scheduling, but the logical job is still to populate KV state for the prompt.
+    You send in a prompt. The model reads the whole thing in a <strong>single forward pass</strong> — all
+    tokens processed at once, in parallel.
   </p>
 
   <p>
-    At the end of prefill, you have one output: the first generated token (sampled from the probability
-    distribution over the vocabulary at the last position).
+    That parallelism is what makes prefill <strong>compute-bound</strong>: processing all N positions
+    together means large, dense matrix multiplications across the full input. Attention is O(n²) in
+    sequence length, so a longer prompt is meaningfully more expensive — but it's all done in one shot.
+    The factory floor is running at capacity.
+  </p>
+
+  <p>
+    The output: the <strong>first generated token</strong>, sampled from the model's probability
+    distribution at the last position.
   </p>
 
   <h3>Phase 2: Decode</h3>
@@ -393,8 +396,10 @@
     At the A100's 2&nbsp;TB/s peak bandwidth, that's an idealized lower bound of about
     8&nbsp;ms of memory traffic per token for a single sequence; in practice, compute and memory
     transfers overlap in hardware pipelines, and batching multiple sequences amortizes the weight
-    loading across all of them. Even so, the ratio of compute work to bytes moved stays tiny.
-    This is classic memory-bandwidth-bound territory, exactly as described in the brrr article's roofline analysis.
+    loading across all of them. Even so, decode at batch size 1 runs at roughly <strong>1&ndash;2&nbsp;FLOPs/byte</strong>.
+    The A100's ridge point sits at ~156&nbsp;FLOPs/byte (312&nbsp;TFLOPS / 2&nbsp;TB/s): anything below that is
+    memory-bandwidth-bound, not compute-bound. Decode is 100&times; below that line. Classic
+    memory-bandwidth-bound territory, the same bottleneck the brrr article covers at the kernel level.
   </p>
 
 <div class="diagram">Prefill:
@@ -444,14 +449,14 @@ Decode:
     The model weights themselves take about 16&nbsp;GB, giving an upper bound of ~64&nbsp;GB from
     an 80&nbsp;GB A100 before accounting for activations, CUDA graphs, allocator state, and other
     runtime memory. That upper bound is enough for around 500,000 cached tokens in theory.
-    But with naïve allocation, that budget disappears much faster than it should.
+    But with naive allocation, that budget disappears much faster than it should.
   </p>
 
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <h2 id="waste1">Waste #1: The Memory Fragmentation Problem</h2>
 
   <p>
-    Given that KV cache is expensive, how does a naïve serving system manage it?
+    Given that KV cache is expensive, how does a naive serving system manage it?
     The obvious approach: when a request arrives, pre-allocate a contiguous block of GPU memory
       for its KV cache, sized to the <em>maximum possible sequence length</em>.
     You need it contiguous because the attention kernels are written to assume a flat, contiguous layout.
@@ -482,7 +487,7 @@ Decode:
     <p>
         <strong>Measured result:</strong> The
         <a href="https://arxiv.org/abs/2309.06180">vLLM paper (SOSP '23)</a>
-        found that under this naïve allocation strategy,
+        found that under this naive allocation strategy,
       <strong>60–80% of reserved KV cache memory goes to waste</strong> due to fragmentation.
       Your GPU is mostly holding empty reservations.
     </p>
@@ -510,32 +515,55 @@ Decode:
 
   <p>
     Instead of one big contiguous region per request, divide GPU HBM into small, fixed-size
-      <strong>physical blocks</strong>. Using a 16-token block as a concrete example,
+      <strong>physical blocks</strong> managed in a single global <strong>block pool</strong> shared
+      across all requests. Using a 16-token block as a concrete example,
       each block holds KV tensors for 16 token positions. The block size is configurable and can
       depend on the platform and attention backend. For Llama-3-8B in FP16, this example works out
       to 16 × 128&nbsp;KB ≈ 2&nbsp;MB per block.
   </p>
 
   <p>
-    Each in-flight request gets a <strong>block table</strong>: a small ledger that maps
+    Each in-flight request gets its own <strong>block table</strong>: a small ledger that maps
     "logical block 0 → physical block #47, logical block 1 → physical block #103, ..."
-    The blocks don't need to be contiguous. The block table is the indirection layer that makes
-    non-contiguous storage look seamless to the attention kernel.
+    All requests draw their physical blocks from the same shared pool, but each request's
+    block table is private to it. The blocks don't need to be contiguous. The block table is the
+    indirection layer that makes non-contiguous storage look seamless to the attention kernel.
   </p>
 
-<div class="diagram">Naïve allocation (contiguous, pre-reserved):
+<div class="diagram">per-request block tables (each private)
+
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│    Request A    │     │    Request B    │     │    Request C    │
+├────────┬────────┤     ├────────┬────────┤     ├────────┬────────┤
+│   L0   │   P2   │     │   L0   │   P0   │     │   L0   │   P4   │
+├────────┼────────┤     ├────────┼────────┤     ├────────┼────────┤
+│   L1   │   P5   │     │   L1   │   P3   │     │   L1   │   P6   │
+└────────┴────────┘     ├────────┼────────┤     └────────┴────────┘
+                        │   L2   │   P7   │
+                        └────────┴────────┘
+
+global block pool (shared by all requests)
+
+┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐ ┌─────┐
+│ P0  │ │ P1  │ │ P2  │ │ P3  │ │ P4  │ │ P5  │ │ P6  │ │ P7  │
+│  B  │ │ --- │ │  A  │ │  B  │ │  C  │ │  A  │ │  C  │ │  B  │
+└─────┘ └─────┘ └─────┘ └─────┘ └─────┘ └─────┘ └─────┘ └─────┘
+
+B's blocks are at P0, P3, P7: scattered in the pool, but contiguous in the block table.</div>
+
+<div class="diagram">naive allocation (contiguous, pre-reserved):
 ┌──────────────────────────────────────────────────────┐
-│ Request A (reserved 4096 tok = 512 MB) ░░░░░░░░░░░░ │  ← 90% empty
-│ Request B (reserved 4096 tok = 512 MB) ░░░░░░░░░░░░ │  ← 85% empty
-│ Request C (reserved 4096 tok = 512 MB) ░░░░░░░░░░░░ │  ← 95% empty
+│ Request A (reserved 4096 tok = 512 MB) ░░░░░░░░░░░░  │  ← 90% empty
+│ Request B (reserved 4096 tok = 512 MB) ░░░░░░░░░░░░  │  ← 85% empty
+│ Request C (reserved 4096 tok = 512 MB) ░░░░░░░░░░░░  │  ← 95% empty
 │ [no space for new requests]                          │
 └──────────────────────────────────────────────────────┘
 ░ = reserved but empty
 
 PagedAttention (16-token physical blocks, on demand):
 ┌──────────────────────────────────────────────────────┐
-│[A₀][B₀][A₁][C₀][B₁][A₂][C₁][B₂][D₀][D₁][E₀][ ][ ]│
-│[ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ] │
+│[A₀][B₀][A₁][C₀][B₁][A₂][C₁][B₂][D₀][D₁][E₀][ ][ ]    │
+│[ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ]   │
 └──────────────────────────────────────────────────────┘
 Each request's blocks tracked via a block table (ledger).
 Free blocks instantly available to any request.</div>
@@ -563,7 +591,7 @@ Free blocks instantly available to any request.</div>
 
   <p>
     Beam search keeps N candidate continuations alive simultaneously, all sharing the same prompt prefix.
-    Under naïve allocation, you'd copy the entire KV cache for each beam, like photocopying the
+    Under naive allocation, you'd copy the entire KV cache for each beam, like photocopying the
     whole order ledger every time you branch.
   </p>
 
@@ -579,7 +607,7 @@ Free blocks instantly available to any request.</div>
 
   <p>
     Many production workloads share a system prompt: "You are a helpful assistant. Today's date is..."
-    Under naïve allocation, every request has to recompute the KV vectors for this shared prefix from
+    Under naive allocation, every request has to recompute the KV vectors for this shared prefix from
     scratch on every prefill. PagedAttention supplies the fixed-size block substrate that makes
     sharing practical, but it does not automatically turn every block into a reusable cache entry.
     vLLM's separate <strong>automatic prefix caching</strong> feature hashes completed blocks and

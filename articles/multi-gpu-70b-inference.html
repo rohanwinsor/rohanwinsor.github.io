@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Two Workloads, One Cluster: Multi-GPU 70B Inference From First Principles</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 18px;
+      line-height: 1.75;
+      color: #1a1a1a;
+      background: #fff;
+      padding: 0 20px;
+    }
+
+    .wrapper {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 60px 0 120px;
+    }
+
+    /* ── Typography ─────────────────────────────────────────────── */
+    h1 {
+      font-size: 2.1rem;
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 12px;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      font-size: 1.1rem;
+      color: #555;
+      margin-bottom: 36px;
+    }
+
+    h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-top: 64px;
+      margin-bottom: 16px;
+      padding-bottom: 6px;
+      border-bottom: 2px solid #e8e8e8;
+    }
+
+    h3 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      margin-top: 36px;
+      margin-bottom: 10px;
+      color: #111;
+    }
+
+    p { margin-bottom: 20px; }
+
+    a {
+      color: #2563eb;
+      text-decoration: none;
+      border-bottom: 1px solid #bfdbfe;
+      transition: border-color 0.15s;
+    }
+    a:hover { border-color: #2563eb; }
+
+    strong { font-weight: 600; }
+    em { font-style: italic; }
+
+    /* ── Attribution box ────────────────────────────────────────── */
+    .attribution {
+      background: #f0f7ff;
+      border-left: 4px solid #2563eb;
+      padding: 16px 20px;
+      border-radius: 0 6px 6px 0;
+      margin-bottom: 48px;
+      font-size: 0.95rem;
+      color: #374151;
+    }
+
+    /* ── Callout / insight boxes ────────────────────────────────── */
+    .callout {
+      background: #fefce8;
+      border-left: 4px solid #ca8a04;
+      padding: 16px 20px;
+      border-radius: 0 6px 6px 0;
+      margin: 28px 0;
+      font-size: 0.97rem;
+    }
+    .callout.blue  { background: #f0f9ff; border-left-color: #0284c7; }
+    .callout.green { background: #f0fdf4; border-left-color: #16a34a; }
+    .callout.red   { background: #fef2f2; border-left-color: #dc2626; }
+    .callout p:last-child { margin-bottom: 0; }
+
+    /* ── Code / monospace ───────────────────────────────────────── */
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.88em;
+      background: #f3f4f6;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #1a1a1a;
+    }
+
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.85rem;
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px 24px;
+      overflow-x: auto;
+      line-height: 1.5;
+      margin: 24px 0;
+      color: #1a1a1a;
+    }
+
+    /* ── Tables ─────────────────────────────────────────────────── */
+    .table-wrap { overflow-x: auto; margin: 28px 0; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.93rem;
+    }
+
+    th {
+      background: #f3f4f6;
+      font-weight: 600;
+      text-align: left;
+      padding: 10px 14px;
+      border: 1px solid #e5e7eb;
+    }
+
+    td {
+      padding: 9px 14px;
+      border: 1px solid #e5e7eb;
+      vertical-align: top;
+    }
+
+    tr:nth-child(even) td { background: #fafafa; }
+
+    /* ── Diagrams / ASCII art ───────────────────────────────────── */
+    .diagram {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.8rem;
+      background: #f8f9fa;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px 24px;
+      overflow-x: auto;
+      line-height: 1.4;
+      margin: 28px 0;
+      white-space: pre;
+    }
+
+    /* ── Section divider ────────────────────────────────────────── */
+    hr {
+      border: none;
+      border-top: 1px solid #e8e8e8;
+      margin: 60px 0;
+    }
+
+    /* ── Lists ──────────────────────────────────────────────────── */
+    ul, ol { padding-left: 24px; margin-bottom: 20px; }
+    li { margin-bottom: 8px; }
+
+    /* ── Table of contents ──────────────────────────────────────── */
+    .toc {
+      background: #f8f9fa;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin-bottom: 48px;
+      font-size: 0.92rem;
+    }
+    .toc h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6b7280;
+      border: none;
+      margin-top: 0;
+      margin-bottom: 12px;
+      padding-bottom: 0;
+    }
+    .toc ol { margin-bottom: 0; padding-left: 20px; }
+    .toc li { margin-bottom: 4px; }
+    .toc a { border-bottom: none; color: #374151; }
+    .toc a:hover { color: #2563eb; }
+
+    /* ── Footer ─────────────────────────────────────────────────── */
+    .footer {
+      margin-top: 80px;
+      padding-top: 24px;
+      border-top: 1px solid #e8e8e8;
+      font-size: 0.88rem;
+      color: #6b7280;
+    }
+
+    @media (max-width: 600px) {
+      body { font-size: 16px; }
+      h1 { font-size: 1.6rem; }
+      h2 { font-size: 1.25rem; }
+    }
+  </style>
+</head>
+<body>
+<main>
+<article>
+<div class="wrapper">
+
+  <h1>Two Workloads, One Cluster: Multi-GPU 70B Inference From First Principles</h1>
+  <p class="subtitle">A ground-up explanation of tensor, pipeline, and data parallelism; quantization; and the real-time vs. batch tradeoff.</p>
+
+  <div class="attribution">
+    This article is inspired by Horace He's
+    <a href="https://horace.io/brrr_intro.html">Making Deep Learning Go Brrr From First Principles</a>,
+    which explains GPU performance from first principles using a factory analogy.
+    That framing carries forward here; we just add more factories.
+  </div>
+
+  <div class="callout green">
+    <p>
+      <strong>Scope:</strong> this is a first-principles design analysis, not an original benchmark
+      report. The memory calculations are theoretical, and the configurations are candidates to
+      test against a defined workload and SLO. The core thesis is to size one replica first, then
+      replicate that shape for capacity. Official runtime documentation and source papers are linked
+      where they inform the reasoning.
+    </p>
+  </div>
+
+  <nav class="toc" aria-label="Table of contents">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#memory-math">The Memory Math</a></li>
+      <li><a href="#tp">Tensor Parallelism: The Horizontal Split</a></li>
+      <li><a href="#pp">Pipeline Parallelism: The Vertical Split</a></li>
+      <li><a href="#dp">Data Parallelism: Replicate the Model</a></li>
+      <li><a href="#quantization">Quantization: Fitting More with Less</a></li>
+      <li><a href="#two-workloads">Two Workloads, Different Objectives</a></li>
+      <li><a href="#mental-model">The Mental Model: Which Configuration Are You In?</a></li>
+      <li><a href="#measure">What I Would Measure</a></li>
+      <li><a href="#together">Putting It All Together</a></li>
+    </ol>
+  </nav>
+
+  <p>
+    There is a class of models that won't fit on a single GPU at all.
+    Llama-3-70B in FP16 or BF16 takes about 140&nbsp;GB for weights alone. An A100 has 80&nbsp;GB.
+    <strong>The model doesn't fit.</strong> You need at least two GPUs just to load the weights.
+    But fitting one model replica is only the first problem. You must also decide how much hardware
+    each replica should use and how many independent replicas to run. Those choices change the
+    balance between per-request latency, aggregate throughput, and cost.
+  </p>
+
+  <p>
+    This article is organized around that tension. We'll work through tensor and pipeline parallelism
+    for distributing one replica, data parallelism for adding replicas, and quantization for reducing
+    the memory needed by each replica. Then we'll turn those mechanisms into candidate configurations
+    for interactive and offline workloads.
+  </p>
+
+  <p>
+    We will <em>not</em> cover: model training, FSDP or DeepSpeed ZeRO, expert parallelism for
+    MoE models, or cross-datacenter deployment. All are real topics; covering them here would dilute the focus.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="memory-math">The Memory Math</h2>
+
+  <p>
+    Start with the memory constraint.
+    A model's weight memory in FP16 or BF16 is approximately:
+  </p>
+
+  <pre>Weight memory ≈ num_parameters × 2 bytes
+Llama-3-70B ≈ 70,000,000,000 × 2 = 140 GB</pre>
+
+  <p>
+    An A100 SXM4 has 80&nbsp;GB of HBM. The model doesn't fit. Your options:
+  </p>
+
+  <div class="table-wrap">
+  <table>
+    <caption style="caption-side:bottom; font-size:0.82rem; color:#6b7280; text-align:left; padding-top:8px;">
+      Theoretical estimates using nominal device capacity. Actual usable headroom is lower due to CUDA graphs, NCCL buffers, activation memory, allocator overhead, and model metadata. FP16/BF16 TP=2 and single-GPU INT8 are especially tight.
+      KV heads are sharded across TP ranks: effective per-GPU cost is 320&nbsp;KiB ÷ TP_size per token.
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Configuration</th>
+        <th scope="col">GPU count</th>
+        <th scope="col">Weights per GPU</th>
+        <th scope="col">KV cache headroom per GPU</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>FP16/BF16, TP=2</td><td>2× A100 80GB</td><td>70 GB</td><td>~10 GB</td></tr>
+      <tr><td>FP16/BF16, TP=4</td><td>4× A100 80GB</td><td>35 GB</td><td>~45 GB</td></tr>
+      <tr><td>FP16/BF16, TP=8</td><td>8× A100 80GB</td><td>17.5 GB</td><td>~62.5 GB</td></tr>
+      <tr><td>INT8, 1 GPU</td><td>1× A100 80GB</td><td>~70 GB</td><td>~10 GB</td></tr>
+      <tr><td>INT4, 1 GPU</td><td>1× A100 80GB</td><td>~35 GB</td><td>~45 GB</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    The KV cache headroom column matters, but reading it requires one more step.
+    For Llama-3-70B the full FP16/BF16 KV cache costs <strong>320&nbsp;KiB per token</strong>
+    (<code>2 × 80 layers × 8 KV heads × 128 dim × 2 bytes</code>); under tensor parallelism,
+    KV heads are sharded across TP ranks just like weight matrices. Llama-3-70B has 8 GQA KV heads,
+    so at TP=8 each GPU holds exactly 1 KV head: <strong>40&nbsp;KiB per token per GPU</strong>.
+    The effective capacity is the total headroom across all GPUs divided by the full 320&nbsp;KiB/token cost:
+  </p>
+
+  <pre>TP=2 capacity: (2 × 10 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 30 concurrent 2K sessions
+TP=4 capacity: (4 × 45 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 268 concurrent 2K sessions
+TP=8 capacity: (8 × 62.5 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 745 concurrent 2K sessions
+  (theoretical upper bound before runtime overhead)</pre>
+
+  <p>
+    TP=8 distributes both compute and KV storage across GPUs,
+    turning what looked like tight headroom per GPU into a large collective pool.
+    Runtime overhead (NCCL buffers, CUDA graphs, activation memory) will reduce these numbers in practice.
+  </p>
+
+  <p>
+    More GPUs buy memory capacity and can reduce compute time, but they introduce
+    a new cost that didn't exist before: <strong>inter-GPU communication</strong>.
+    The next sections separate the three ways GPUs can participate in a deployment.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="tp">Tensor Parallelism: The Horizontal Split</h2>
+
+  <p>
+    Tensor parallelism (TP) is the strategy that splits each weight matrix across N GPUs.
+    Every GPU participates in every forward pass, working on its slice of the computation in parallel.
+  </p>
+
+  <h3>The Mechanism</h3>
+
+  <p>
+    In the classic Megatron-style pattern, TP uses two complementary layer types.
+  </p>
+
+  <p>
+    <strong>Column-parallel layers</strong> (attention QKV projections, FFN up-projection):
+    the weight matrix is split along the output dimension, so each GPU holds a column shard.
+    Every GPU receives the same input and independently computes a shard of the output.
+    The results remain partitioned for the following row-parallel layer, so this projection
+    does not require an immediate reduction.
+  </p>
+
+  <p>
+    <strong>Row-parallel layers</strong> (attention output projection, FFN down-projection):
+    the weight matrix is split along the input dimension. Each GPU receives its shard of the
+    prior layer's output and computes a <em>partial sum</em> of the final output.
+    These partial sums must be summed across all GPUs via an <strong>AllReduce</strong>
+    before the next layer can begin.
+  </p>
+
+<div class="diagram">Row-parallel layer (TP=4) — where AllReduce happens:
+
+  Each GPU holds a shard of the input (from the prior column-parallel layer):
+         [GPU 0]        [GPU 1]        [GPU 2]        [GPU 3]
+         x[0:d/4]       x[d/4:d/2]    x[d/2:3d/4]   x[3d/4:d]
+         W[0:d/4,:]     W[d/4:d/2,:]  W[d/2:3d/4,:] W[3d/4:d,:]
+              ↓              ↓              ↓              ↓
+         partial_0      partial_1     partial_2     partial_3   ← partial sums
+            └──────────────┴──────────────┴──────────────┘
+                              AllReduce (sum)
+                      (every GPU gets the full output)
+                              ↓
+                        Complete output → next layer</div>
+
+  <p>
+    In this simplified dense decoder block, each transformer layer contains one
+    column-parallel → row-parallel pair for attention and another for the FFN, giving
+    <strong>two reductions per layer</strong>. For Llama-3-70B's 80 layers, that is
+    <strong>160 reductions per forward pass</strong>. Exact collectives can differ when a runtime
+    uses sequence parallelism, fused operations, or architecture-specific kernels.
+  </p>
+
+  <h3>The Conference Call Cost</h3>
+
+  <p>
+    An AllReduce is a coordination step: all ranks exchange partial results, and dependent
+    computation cannot continue until the reduction is available. In the factory analogy: after each
+    production stage, all factories have a mandatory conference call to combine their partial
+    work before the next stage can start.
+  </p>
+
+  <p>
+    The cost depends on where the TP group sits:
+  </p>
+
+  <ul>
+    <li><strong>NVLink/NVSwitch:</strong> the preferred boundary for TP because collectives stay on a high-bandwidth local fabric</li>
+    <li><strong>PCIe:</strong> workable at smaller TP sizes, but communication can erase the compute savings</li>
+    <li><strong>Across nodes:</strong> possible with InfiniBand and GPUDirect RDMA, but every layer now pays network latency</li>
+  </ul>
+
+  <p>
+    Collective algorithms, topology, contention, and message size determine the actual cost.
+    Increasing TP degree can stop helping or make latency worse, so topology must be measured
+    rather than inferred from GPU count alone.
+  </p>
+
+  <div class="callout blue">
+    <p>
+      <strong>The key insight:</strong> TP is a latency lever, not a free speedup. It divides
+      matrix multiplication across GPUs but adds communication to every layer. The useful rule is:
+      choose the smallest TP degree that fits the model and satisfies the latency SLO. Beyond that
+      point, extra ranks may add more collective overhead than useful compute.
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="pp">Pipeline Parallelism: The Vertical Split</h2>
+
+  <p>
+    Pipeline parallelism (PP) takes a completely different approach: rather than splitting each
+    weight matrix, it splits the model by <em>layers</em>. GPU 0 holds layers 0–19,
+    GPU 1 holds layers 20–39, GPU 2 holds 40–59, GPU 3 holds 60–79.
+    A forward pass flows sequentially through the pipeline: GPU 0 computes layers 0–19,
+    then passes the intermediate activations to GPU 1, which computes layers 20–39, and so on.
+  </p>
+
+<div class="diagram">Pipeline Parallelism (PP=4, Llama-3-70B):
+
+  [GPU 0]         [GPU 1]         [GPU 2]         [GPU 3]
+  Layers 0–19     Layers 20–39    Layers 40–59    Layers 60–79
+       │                │                │                │
+  forward ─activations→ forward ─activations→ forward ─activations→ forward
+                                                              ↓
+                                                         output token</div>
+
+  <h3>The Communication Advantage</h3>
+
+  <p>
+    In the basic schedule, PP requires one point-to-point transfer per stage boundary: the activation
+    tensor from one GPU to the next. For Llama-3-70B with PP=4, that's 3 transfers per forward
+    pass, each roughly the size of one stage-boundary activation:
+    <code>tokens_in_microbatch × d_model × bytes_per_element</code>.
+    These are less frequent point-to-point messages, a pattern that is often easier to place across
+    nodes than the repeated collectives required by TP.
+  </p>
+
+  <p>
+    This is why PP is a common strategy when <em>one model replica must span multiple nodes</em>.
+    It is not automatically the best way to use every multi-node cluster: if a complete replica fits
+    on each node, independent replicas avoid cross-node communication during the forward pass.
+  </p>
+
+  <h3>The Pipeline Bubble Problem</h3>
+
+  <p>
+    PP has a fundamental efficiency problem when processing a single request.
+    While GPU 1 is computing layers 20–39, GPU 0 is idle; it already finished its layers
+    and has nothing to do until the next request arrives. For a single in-flight request
+    with four equally balanced stages and no stage overlap, average utilization is 25%.
+    The other three factories in the assembly line are dark.
+  </p>
+
+<div class="diagram">Pipeline Parallelism (PP=4), single request:
+
+  Time →
+  [GPU 0]  ████░░░░░░░░░░░░░░░░░  (busy 25% of the time)
+  [GPU 1]  ░░░░████░░░░░░░░░░░░░
+  [GPU 2]  ░░░░░░░░████░░░░░░░░░
+  [GPU 3]  ░░░░░░░░░░░░████░░░░░  ← output
+           ████ = computing    ░ = idle (pipeline bubble)</div>
+
+  <h3>The Theoretical Fix: Micro-Batching</h3>
+
+  <p>
+    The standard theoretical technique for reducing bubble overhead is to divide independent work
+    into M <em>micro-batches</em>. In an ideal overlapping implementation, while
+    micro-batch 0 is at GPU 1, GPU 0 would immediately start processing micro-batch 1.
+    Assuming balanced stages and no additional scheduler stalls, utilization across N stages is:
+  </p>
+
+<div class="diagram">Ideal pipeline with micro-batching (PP=4, M=4) — theoretical:
+
+  Time →
+  [GPU 0]  ①②③④░░░░░░░░  ← starts filling immediately
+  [GPU 1]  ░░①②③④░░░░░░
+  [GPU 2]  ░░░░①②③④░░░░
+  [GPU 3]  ░░░░░░①②③④░░  ← output for ①, then ②, ...
+           steady state: all 4 GPUs busy at once (theoretical)</div>
+
+  <pre>Theoretical utilization ≈ M / (M + N − 1)
+
+where M = number of micro-batches, N = pipeline depth (number of stages)
+
+PP=4, M=4:   4 / (4 + 3) ≈ 57%
+PP=4, M=10:  10 / (10 + 3) ≈ 77%
+PP=4, M=27:  27 / (27 + 3) = 90%</pre>
+
+  <div class="callout blue">
+    <p>
+      <strong>Implementation caveat:</strong> this is the ideal GPipe-style utilization model,
+      not a claim that a particular vLLM release or executor overlaps stages exactly this way.
+      Autoregressive dependencies, continuous batching, stage imbalance, and scheduler behavior all
+      affect the realized bubble. Verify overlap with an execution trace and pin the runtime version
+      when reporting results.
+    </p>
+  </div>
+
+  <p>
+    In this ideal model, approaching 90% utilization with PP=4 requires 27 micro-batches in the
+    pipeline run. Real serving does not map request count to micro-batches this cleanly, but the
+    direction is useful: a shallow queue exposes bubbles, while abundant independent work gives
+    the scheduler more opportunity to overlap stages. The practical amount of work needed must be
+    established for the exact runtime and request distribution.
+  </p>
+
+  <div class="callout">
+    <p>
+      <strong>The takeaway:</strong> PP solves a placement problem first: it lets one replica span
+      devices or nodes by assigning different layers to different stages. Pipeline utilization can
+      improve with more independent work, but PP should still be compared with smaller TP groups and
+      data-parallel replicas whenever a complete replica fits on fewer GPUs.
+    </p>
+  </div>
+
+  <h3>A Common Hybrid When One Replica Must Span Nodes</h3>
+
+  <p>
+    When one replica is too large for a single node, a common pattern combines both strategies:
+    use TP within each node (where NVLink makes AllReduces cheap) and PP across nodes
+    (where the slower fabric carries only stage-boundary activations).
+  </p>
+
+  <p>
+    For a replica that must occupy 2 nodes of 8× A100 SXM4:
+  </p>
+
+  <pre>tensor_parallel_size=8    # all 8 GPUs on each node share each layer
+pipeline_parallel_size=2  # Node A runs layers 0–39, Node B runs 40–79</pre>
+
+  <p>
+    Each node handles its layer range using TP=8 (NVLink for the AllReduces),
+    and the two nodes communicate once per forward pass at the layer boundary
+    (InfiniBand for the activation transfer). For a 70B model that already fits on one of these
+    nodes, this is a topology to compare against replicas, not a default recommendation.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="dp">Data Parallelism: Replicate the Model</h2>
+
+  <p>
+    Tensor and pipeline parallelism answer one question: <em>how should a single model replica be
+    distributed?</em> Data parallelism (DP) answers another: <em>how many independent replicas
+    should serve the request stream?</em>
+  </p>
+
+  <p>
+    Each DP replica owns a full copy of the model, although that copy may itself be sharded with TP
+    or PP. Requests are routed across replicas, and dense-model replicas process independent batches
+    without synchronizing every transformer layer. DP therefore increases aggregate request capacity,
+    but it does not make one request's forward pass faster.
+  </p>
+
+<div class="diagram">Two nodes, one TP=8 replica per node (DP=2, TP=8):
+
+  Request router
+       ├──► Replica 0: Node A [G0 G1 G2 G3 G4 G5 G6 G7]  TP=8
+       └──► Replica 1: Node B [G0 G1 G2 G3 G4 G5 G6 G7]  TP=8
+
+  No model-layer collective crosses the node boundary.
+  Each replica has its own weights, scheduler, and KV-cache pool.</div>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Strategy</th>
+        <th scope="col">What is split?</th>
+        <th scope="col">Primary benefit</th>
+        <th scope="col">Primary cost</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Tensor parallelism</td><td>Each layer's matrices</td><td>Fit a replica; potentially lower per-request latency</td><td>Collectives throughout every forward pass</td></tr>
+      <tr><td>Pipeline parallelism</td><td>Layer ranges</td><td>Fit one replica across devices or nodes</td><td>Pipeline bubbles and stage-boundary transfers</td></tr>
+      <tr><td>Data parallelism</td><td>Request stream across replicas</td><td>Higher aggregate throughput and horizontal scaling</td><td>Weights and KV capacity are duplicated per replica</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout green">
+    <p>
+      <strong>The sizing rule:</strong> first find the smallest TP/PP shape that fits one replica
+      and meets its latency target. Then use remaining GPUs for DP replicas. Larger TP can still be
+      correct, but it should earn its extra GPUs by improving the measured latency or throughput SLO.
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="quantization">Quantization: Fitting More with Less</h2>
+
+  <p>
+    If you can't or don't want to use more GPUs, quantization is the other lever.
+    It shrinks the model's memory footprint by representing weights in a lower-precision format.
+  </p>
+
+  <div class="table-wrap">
+  <table>
+    <caption style="caption-side:bottom; font-size:0.82rem; color:#6b7280; text-align:left; padding-top:8px;">
+      Quality degradation varies by model, method, calibration data, and task. Test on your own evaluation set before committing.
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Format</th>
+        <th scope="col">Weight memory (70B)</th>
+        <th scope="col">Minimum GPUs (A100 80GB)</th>
+        <th scope="col">Typical quality cost</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>FP16 / BF16</td><td>~140 GB</td><td>2 (tight) / 4+ (more headroom)</td><td>Baseline</td></tr>
+      <tr><td>INT8 weight-only or W8A8</td><td>~70 GB plus scales/metadata</td><td>1 (tight) / 2+ (more headroom)</td><td>Workload- and kernel-dependent; evaluate quality</td></tr>
+      <tr><td>INT4 (GPTQ, AWQ, Marlin variants)</td><td>~35 GB plus scales/metadata</td><td>1</td><td>More compression risk; evaluate quality and kernel performance</td></tr>
+      <tr><td>FP8</td><td>~70 GB plus scales/metadata</td><td>Backend-dependent</td><td>Format matters: W8A8 and weight-only paths have different hardware support</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Quantization has a secondary effect beyond memory. Low-batch autoregressive decode is often
+    memory-bandwidth-bound because each step streams a large fraction of the weights while doing
+    relatively little work per weight. Smaller weights can reduce that pressure. As batch size grows,
+    arithmetic intensity rises and compute or kernel efficiency can become the bottleneck, so a
+    2× reduction in weight bytes should not be presented as a guaranteed 2× speedup.
+  </p>
+
+  <div class="callout">
+    <p>
+      <strong>The practical choice for 70B:</strong> select a concrete format and kernel, not just
+      a bit width. For example, FP8 W8A8 is not the same deployment path as weight-only FP8, and
+      current vLLM support differs by GPU architecture. On A100 specifically, do not assume native
+      FP8 W8A8 support. Check the
+      <a href="https://docs.vllm.ai/en/latest/features/quantization/">vLLM compatibility table</a>,
+      measure throughput on the target GPU, and run task-level quality evaluations before committing.
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="two-workloads">Two Workloads, Different Objectives</h2>
+
+  <p>
+    The useful distinction: TP and PP determine the shape of one replica; DP determines how many independent replicas
+    process the queue. The workload determines which resource deserves the next GPU.
+  </p>
+
+  <h3>Real-Time Inference: Optimize for Latency</h3>
+
+  <p>
+    <strong>The scenario:</strong> users are waiting for responses. They care about
+    time-to-first-token (TTFT) and time per output token (TPOT). A slow response
+    is a bad product experience regardless of how efficiently you used the GPU.
+  </p>
+
+  <p>
+    <strong>The starting point: the smallest replica that meets the SLO.</strong> TP can reduce
+    per-request compute time by making GPUs collaborate on each layer, but scaling is sublinear and
+    can reverse when collectives dominate. Once a replica meets the TTFT and TPOT targets, additional
+    GPUs are often more useful as DP replicas that reduce queueing delay and absorb more requests.
+  </p>
+
+  <div class="callout blue">
+    <p>
+      <strong>Factory analogy:</strong> TP assigns more workers to one order; DP opens another
+      complete service line. If an order itself is too slow, add workers to that line. If orders
+      are waiting in the lobby, another line may help more.
+    </p>
+  </div>
+
+  <p>Key configuration choices for real-time:</p>
+  <ul>
+    <li><strong>Keep one TP group within a fast-interconnect domain when possible</strong>; crossing a slow boundary adds collective latency to every layer</li>
+    <li><strong>Tune <code>max_num_seqs</code> against the latency SLO</strong>; more batching can raise throughput while worsening per-request latency</li>
+    <li><strong>Generous KV cache budget</strong>: users have long conversations; don't preempt them mid-session</li>
+    <li><strong>Add DP replicas when queueing dominates</strong>; replicas increase service capacity without widening per-layer collectives</li>
+    <li><strong>Use PP when placement requires it</strong>, not merely because multiple nodes are available</li>
+  </ul>
+
+  <pre># Illustrative low-latency candidate, not a benchmark-derived recommendation
+# 8× A100 SXM4, Llama-3-70B FP16/BF16
+data_parallel_size = 1
+tensor_parallel_size = 8
+pipeline_parallel_size = 1
+max_num_seqs = 32  # tune under the target arrival rate and SLO</pre>
+
+  <h3>Batch Inference: Optimize for Throughput</h3>
+
+  <p>
+    <strong>The scenario:</strong> you're processing offline workloads: annotating a dataset,
+    running evaluations, generating synthetic data. No user is waiting.
+    A request that takes 10 minutes is fine. What matters is cost: how many tokens
+    can you generate per dollar?
+  </p>
+
+  <p>
+    <strong>The starting point: large batches plus as many right-sized replicas as fit.</strong>
+    Continuous batching keeps each replica busy. If a 70B replica fits within one node, DP lets
+    multiple nodes process independent batches with no layer-by-layer cross-node communication.
+    PP becomes necessary when one replica cannot fit within the chosen device group; it is not
+    inherently a throughput upgrade over replicas.
+  </p>
+
+  <div class="callout blue">
+    <p>
+      <strong>Factory analogy:</strong> it's an overnight warehouse run. You have 10,000 orders to
+      fill. Individual order latency is irrelevant; optimize for orders per hour.
+      Keep several complete production lines busy. Use a multi-stage line only when one product is
+      too large for a single building.
+    </p>
+  </div>
+
+  <p>Key configuration choices for batch:</p>
+  <ul>
+    <li><strong>High <code>max_num_seqs</code></strong>: limits how many sequences are scheduled per iteration; set high enough to keep the GPU continuously saturated</li>
+    <li><strong>High <code>max_num_batched_tokens</code></strong>: process more tokens per step to amortize overhead</li>
+    <li><strong>Chunked prefill</strong>: batch prompts may be long; chunk them to keep one long prefill from monopolizing a scheduler iteration</li>
+    <li><strong>Prefer DP across self-contained replicas</strong> when the model fits each replica's device group</li>
+    <li><strong>Use TP within a fast-interconnect domain</strong> and PP across nodes only when one replica must span them</li>
+    <li><strong>Tighter KV cache</strong>: request lengths are predictable from the queue; you can tune headroom more precisely</li>
+  </ul>
+
+  <pre># Illustrative topology values; multi-node launch details omitted
+# 2 nodes × 8× A100 SXM4
+# Candidate A: one replica per node
+data_parallel_size = 2
+tensor_parallel_size = 8
+pipeline_parallel_size = 1
+
+# Candidate B: two smaller replicas per node
+data_parallel_size = 4
+tensor_parallel_size = 4
+pipeline_parallel_size = 1
+
+# Benchmark both with the same request distribution and quality settings.
+max_num_seqs = 256  # applies per DP rank in current vLLM; tune to KV capacity</pre>
+
+  <h3>The Same Hardware, Completely Different Behavior</h3>
+
+<div class="diagram">Hardware: 2 nodes × 8× A100 80GB SXM4 (NVLink within node, InfiniBand across)
+Total: 16 GPUs, 1,280 GB HBM
+
+─────────────────────────────────────────────────────────────────
+Latency-oriented candidate (DP=2, TP=8, PP=1):
+
+  Node A:  [G0][G1][G2][G3][G4][G5][G6][G7]
+           Replica 0: all 8 GPUs collaborate on each assigned request.
+  Node B:  [G0][G1][G2][G3][G4][G5][G6][G7]
+           Replica 1: all 8 GPUs collaborate on each assigned request.
+
+  Strength: two low-latency service lines; no cross-node model collective
+  Weakness: only two independent batches across the cluster
+─────────────────────────────────────────────────────────────────
+Throughput-oriented candidate (DP=4, TP=4, PP=1):
+
+  Node A:  [G0–G3] Replica 0    [G4–G7] Replica 1
+  Node B:  [G0–G3] Replica 2    [G4–G7] Replica 3
+
+  Four independent schedulers process four batches concurrently.
+
+  Strength: more independent batches and no cross-node model collective
+  Weakness: TP=4 may have worse per-request latency; each replica has a smaller KV pool
+─────────────────────────────────────────────────────────────────</div>
+
+  <p>
+    These are hypotheses, not benchmark results. DP=4, TP=4 is only preferable if its aggregate
+    throughput improves while latency, KV capacity, and quality remain acceptable. If a model or
+    context budget cannot fit in four GPUs, the candidate is invalid before performance testing begins.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="mental-model">The Mental Model: Which Configuration Are You In?</h2>
+
+  <p>
+    The choices above boil down to a handful of questions. Work through them in order:
+  </p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Question</th>
+        <th scope="col">Answer → Implication</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Does 70B FP16 fit on my available GPUs?</td>
+        <td>No → increase TP/PP degree, or use a supported quantization format after quality evaluation</td>
+      </tr>
+      <tr>
+        <td>What is the smallest TP/PP group that fits one replica?</td>
+        <td>Start there; memory feasibility sets the lower bound before performance tuning</td>
+      </tr>
+      <tr>
+        <td>Does that replica meet the TTFT and TPOT SLO?</td>
+        <td>No → test a larger TP group on the fastest available interconnect</td>
+      </tr>
+      <tr>
+        <td>Does queueing dominate end-to-end latency or is aggregate throughput the goal?</td>
+        <td>Yes → add DP replicas before widening a replica that already meets its SLO</td>
+      </tr>
+      <tr>
+        <td>Can one complete replica fit within each node?</td>
+        <td>Yes → compare independent per-node replicas against any cross-node PP design</td>
+      </tr>
+      <tr>
+        <td>Must one replica span multiple nodes?</td>
+        <td>Yes → TP within fast local domains and PP across the slower node boundary is a common candidate</td>
+      </tr>
+      <tr>
+        <td>Do my GPUs connect through PCIe rather than NVLink/NVSwitch?</td>
+        <td>Benchmark TP scaling carefully; topology and peer-to-peer support may set the practical limit</td>
+      </tr>
+      <tr>
+        <td>Am I changing precision?</td>
+        <td>Pin the exact format, kernel, GPU support, and task-level quality result</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    These modes are not mutually exclusive. A production service can use
+    TP inside every replica, DP across replicas, and PP only for replicas that must span placement
+    boundaries. The same cluster can also use a latency-oriented replica shape during business hours
+    and a throughput-oriented shape for queued jobs, provided model-loading and operational costs
+    make reconfiguration worthwhile.
+  </p>
+
+  <hr />
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="measure">What I Would Measure Before Choosing</h2>
+
+  <p>
+    The diagrams generate candidates; measurements choose among them. A published comparison is only
+    useful when every candidate sees the same model revision, precision, sampling settings, prompt and
+    output-length distribution, request arrival pattern, and software version.
+  </p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Question</th>
+        <th scope="col">Metrics</th>
+        <th scope="col">Why it matters</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>Does the interactive service meet its SLO?</td><td>p50/p95/p99 TTFT, TPOT, and end-to-end latency</td><td>Averages hide queueing and long-tail stalls</td></tr>
+      <tr><td>How much useful work is completed?</td><td>Requests/s, input tokens/s, output tokens/s</td><td>Prefill and decode stress hardware differently</td></tr>
+      <tr><td>Is memory the limiting resource?</td><td>KV-cache occupancy, preemptions, recomputations, peak HBM</td><td>Nominal free HBM overstates usable sequence capacity</td></tr>
+      <tr><td>Is communication erasing TP gains?</td><td>Collective time, achieved link bandwidth, GPU idle gaps</td><td>Advertised bandwidth does not reveal application-level cost</td></tr>
+      <tr><td>Is the deployment economical?</td><td>GPU-hours and cost per million output tokens at the required SLO</td><td>Maximum raw throughput may violate latency targets</td></tr>
+      <tr><td>Did compression preserve behavior?</td><td>Task-level quality and safety evaluations</td><td>A faster topology is irrelevant if the model no longer meets product requirements</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout green">
+    <p>
+      <strong>Comparison method:</strong> sweep TP/PP/DP shapes under the expected request
+      distribution, discard configurations that fail memory, quality, or latency constraints,
+      then compare cost among the survivors. This article supplies the reasoning for the candidate
+      set; published benchmark suites or an internal load test supply the final numbers.
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="together">Putting It All Together</h2>
+
+  <p>
+    Let's trace a concrete 70B deployment on a realistic cluster: 8× A100 80GB SXM4 connected
+    through NVSwitch, running Llama-3-70B in FP16 or BF16.
+  </p>
+
+  <h3>Memory Layout (TP=8)</h3>
+
+  <ul>
+    <li><strong>Weights per GPU</strong>: 140&nbsp;GB ÷ 8 = 17.5&nbsp;GB</li>
+    <li><strong>KV cache headroom per GPU</strong>: 80 − 17.5 ≈ 62.5&nbsp;GB</li>
+    <li><strong>KV cache capacity (cluster-wide)</strong>: under TP=8 each GPU holds 1 KV head (40&nbsp;KiB/token). The 8 GPUs collectively store all 8 heads for every cached token, so nominal capacity = 8 × 62.5&nbsp;GB ÷ 320&nbsp;KiB/token ≈ 1.5 million cached tokens</li>
+    <li><strong>Concurrent 2K-context sessions (theoretical)</strong>: 500&nbsp;GB total ÷ (320&nbsp;KiB × 2,048) ≈ 745 across the whole TP group, not 745 per GPU. Actual capacity is lower after runtime reservations, fragmentation, active-token workspace, and safety margin.</li>
+  </ul>
+
+  <h3>Real-Time Mode</h3>
+
+  <p>
+    Configure for interactive use: low concurrency, fast per-user response.
+  </p>
+
+  <pre>data_parallel_size = 1
+tensor_parallel_size = 8
+pipeline_parallel_size = 1
+max_num_seqs = 32</pre>
+
+  <p>
+    This is a latency-oriented candidate: all 8 GPUs collaborate on each request. It is justified
+    only if TP=8 materially improves tail TTFT or TPOT over TP=4 while meeting the expected load.
+    If TP=4 already meets the SLO, two DP replicas of TP=4 may reduce queueing and serve more users.
+  </p>
+
+  <h3>Batch Mode</h3>
+
+  <p>
+    Reconfigure for overnight processing: high concurrency, maximize throughput.
+  </p>
+
+  <pre>data_parallel_size = 2
+tensor_parallel_size = 4
+pipeline_parallel_size = 1
+max_num_seqs = 256  # per replica; tune to the request-length distribution</pre>
+
+  <p>
+    This candidate divides the node into two independent TP=4 replicas. Each replica has roughly
+    45&nbsp;GB of nominal non-weight HBM per GPU, and the two schedulers can process independent
+    batches. It is not guaranteed to beat TP=8: smaller matrix shards, duplicated runtime
+    reservations, topology, and reduced per-replica batch size can change the result.
+  </p>
+
+  <p>
+    Adding a second identical node creates two natural candidates: DP=2, TP=8 for two
+    latency-oriented replicas, or DP=4, TP=4 for four smaller replicas. PP=2 enters the candidate
+    set when one replica must span both nodes; it should not be enabled merely because the second
+    node exists.
+  </p>
+
+  <h3>The Underlying Principle</h3>
+
+  <p>
+    Multi-GPU inference introduces a new resource that didn't exist in single-GPU deployments:
+    <strong>inter-GPU communication bandwidth</strong>. It sits alongside compute and memory bandwidth
+    as a potential bottleneck, and it interacts with your workload type in a specific way.
+    TP pays communication throughout every forward pass in exchange for a wider replica.
+    PP communicates at stage boundaries and introduces pipeline scheduling concerns.
+    DP duplicates the replica and its memory footprint in exchange for independent request capacity.
+  </p>
+
+  <p>
+    The right configuration is the smallest
+    replica shape that satisfies memory and per-request latency, multiplied into enough replicas to
+    satisfy arrival rate and throughput, with quantization considered only alongside kernel support
+    and quality. The hardware topology generates constraints; workload measurements settle the choice.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2>Further Reading</h2>
+
+  <ul>
+    <li><a href="https://horace.io/brrr_intro.html">Making Deep Learning Go Brrr From First Principles</a> — Horace He. The inspiration for this article's first-principles approach and factory analogy.</li>
+    <li><a href="https://docs.vllm.ai/en/latest/serving/parallelism_scaling/">vLLM Parallelism and Scaling documentation</a> — official docs on TP, PP, and multi-node configuration.</li>
+    <li><a href="https://docs.vllm.ai/en/latest/serving/data_parallel_deployment/">vLLM Data Parallel Deployment documentation</a> — official docs on combining independent DP replicas with TP groups.</li>
+    <li><a href="https://docs.vllm.ai/en/latest/features/quantization/">vLLM Quantization documentation</a> — current format and hardware compatibility matrix.</li>
+    <li><a href="https://arxiv.org/abs/1909.08053">Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism</a> — Shoeybi et al. The tensor-parallel matrix partitioning used by modern inference runtimes.</li>
+    <li><a href="https://arxiv.org/abs/1811.06965">GPipe: Efficient Training of Giant Neural Networks using Pipeline Parallelism</a> — Huang et al. Source of the idealized pipeline bubble model.</li>
+    <li><a href="https://arxiv.org/abs/2309.06180">Efficient Memory Management for Large Language Model Serving with PagedAttention</a> — Kwon et al., SOSP 2023. The original vLLM paper.</li>
+    <li><a href="https://docs.vllm.ai/en/latest/benchmarking/cli/">vLLM Benchmark CLI documentation</a> — official tooling for repeatable latency and throughput comparisons.</li>
+    <li><a href="https://www.nvidia.com/en-us/data-center/a100/">NVIDIA A100 product page</a> and <a href="https://www.nvidia.com/en-us/data-center/h100/">NVIDIA H100 product page</a> — vendor specifications for HBM and NVLink bandwidth.</li>
+  </ul>
+
+  <div class="footer">
+    <p>Written using the factory analogy established by Horace He. Numbers for Llama-3-70B are derived from its published architecture (80 layers, 8 GQA heads, 128 head dimension). Capacity estimates are theoretical upper bounds; actual usable capacity depends on runtime, model revision, precision, and workload.</p>
+  </div>
+
+</div>
+</article>
+</main>
+</body>
+</html>

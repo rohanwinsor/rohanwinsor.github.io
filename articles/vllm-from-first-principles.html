@@ -1,0 +1,1186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="A first-principles explanation of how vLLM improves LLM serving with PagedAttention, continuous batching, prefix caching, structured outputs, and speculative decoding." />
+  <meta name="author" content="Rohan" />
+  <meta name="robots" content="index, follow" />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="vLLM From First Principles: How the LLM Factory Learned Not to Waste" />
+  <meta property="og:description" content="How vLLM manages KV-cache memory, schedules requests, constrains output formats, and accelerates decoding." />
+  <meta property="article:published_time" content="2026-06-12" />
+  <meta property="article:modified_time" content="2026-06-13" />
+  <meta name="twitter:card" content="summary" />
+  <title>vLLM From First Principles: How the LLM Factory Learned Not to Waste</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 18px;
+      line-height: 1.75;
+      color: #1a1a1a;
+      background: #fff;
+      padding: 0 20px;
+    }
+
+    .wrapper {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 60px 0 120px;
+    }
+
+    /* ── Typography ─────────────────────────────────────────────── */
+    h1 {
+      font-size: 2.1rem;
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 12px;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      font-size: 1.1rem;
+      color: #555;
+      margin-bottom: 10px;
+    }
+
+    .byline {
+      font-size: 0.9rem;
+      color: #6b7280;
+      margin-bottom: 32px;
+    }
+
+    .summary {
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin-bottom: 28px;
+    }
+
+    .summary h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #166534;
+      border: none;
+      margin: 0 0 12px;
+      padding: 0;
+    }
+
+    .summary ul { margin-bottom: 0; }
+
+    .source-note {
+      color: #6b7280;
+      font-size: 0.84rem;
+      margin-top: -14px;
+    }
+
+    .version-note {
+      color: #4b5563;
+      font-size: 0.9rem;
+    }
+
+    h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-top: 64px;
+      margin-bottom: 16px;
+      padding-bottom: 6px;
+      border-bottom: 2px solid #e8e8e8;
+    }
+
+    h3 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      margin-top: 36px;
+      margin-bottom: 10px;
+      color: #111;
+    }
+
+    p {
+      margin-bottom: 20px;
+    }
+
+    a {
+      color: #2563eb;
+      text-decoration: none;
+      border-bottom: 1px solid #bfdbfe;
+      transition: border-color 0.15s;
+    }
+    a:hover { border-color: #2563eb; }
+
+    strong { font-weight: 600; }
+    em { font-style: italic; }
+
+    /* ── Attribution box ────────────────────────────────────────── */
+    .attribution {
+      background: #f0f7ff;
+      border-left: 4px solid #2563eb;
+      padding: 16px 20px;
+      border-radius: 0 6px 6px 0;
+      margin-bottom: 48px;
+      font-size: 0.95rem;
+      color: #374151;
+    }
+
+    /* ── Callout / insight boxes ────────────────────────────────── */
+    .callout {
+      background: #fefce8;
+      border-left: 4px solid #ca8a04;
+      padding: 16px 20px;
+      border-radius: 0 6px 6px 0;
+      margin: 28px 0;
+      font-size: 0.97rem;
+    }
+
+    .callout.blue {
+      background: #f0f9ff;
+      border-left-color: #0284c7;
+    }
+
+    .callout.green {
+      background: #f0fdf4;
+      border-left-color: #16a34a;
+    }
+
+    .callout.red {
+      background: #fef2f2;
+      border-left-color: #dc2626;
+    }
+
+    .callout p:last-child { margin-bottom: 0; }
+
+    /* ── Code / monospace ───────────────────────────────────────── */
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.88em;
+      background: #f3f4f6;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #1a1a1a;
+    }
+
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.85rem;
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px 24px;
+      overflow-x: auto;
+      line-height: 1.5;
+      margin: 24px 0;
+      color: #1a1a1a;
+    }
+
+    /* ── Tables ─────────────────────────────────────────────────── */
+    .table-wrap { overflow-x: auto; margin: 28px 0; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.93rem;
+    }
+
+    th {
+      background: #f3f4f6;
+      font-weight: 600;
+      text-align: left;
+      padding: 10px 14px;
+      border: 1px solid #e5e7eb;
+    }
+
+    td {
+      padding: 9px 14px;
+      border: 1px solid #e5e7eb;
+      vertical-align: top;
+    }
+
+    tr:nth-child(even) td { background: #fafafa; }
+
+    /* ── Diagrams / ASCII art ───────────────────────────────────── */
+    .diagram {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.8rem;
+      background: #f8f9fa;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px 24px;
+      overflow-x: auto;
+      line-height: 1.4;
+      margin: 28px 0;
+      white-space: pre;
+    }
+
+    /* ── Section divider ────────────────────────────────────────── */
+    hr {
+      border: none;
+      border-top: 1px solid #e8e8e8;
+      margin: 60px 0;
+    }
+
+    /* ── Lists ──────────────────────────────────────────────────── */
+    ul, ol {
+      padding-left: 24px;
+      margin-bottom: 20px;
+    }
+
+    li { margin-bottom: 8px; }
+
+    /* ── Table of contents ──────────────────────────────────────── */
+    .toc {
+      background: #f8f9fa;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin-bottom: 48px;
+      font-size: 0.92rem;
+    }
+    .toc h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6b7280;
+      border: none;
+      margin-top: 0;
+      margin-bottom: 12px;
+      padding-bottom: 0;
+    }
+    .toc ol {
+      margin-bottom: 0;
+      padding-left: 20px;
+    }
+    .toc li { margin-bottom: 4px; }
+    .toc a { border-bottom: none; color: #374151; }
+    .toc a:hover { color: #2563eb; }
+
+    /* ── Footer ─────────────────────────────────────────────────── */
+    .footer {
+      margin-top: 80px;
+      padding-top: 24px;
+      border-top: 1px solid #e8e8e8;
+      font-size: 0.88rem;
+      color: #6b7280;
+    }
+
+    @media (max-width: 600px) {
+      body { font-size: 16px; }
+      h1 { font-size: 1.6rem; }
+      h2 { font-size: 1.25rem; }
+    }
+  </style>
+</head>
+<body>
+<main>
+<article>
+<div class="wrapper">
+
+  <h1>vLLM From First Principles: How the LLM Factory Learned Not to Waste</h1>
+  <p class="subtitle">A ground-up explanation of PagedAttention, continuous batching, structured decoding, and speculative decoding.</p>
+
+  <div class="attribution">
+    This article is directly inspired by Horace He's excellent
+    <a href="https://horace.io/brrr_intro.html">Making Deep Learning Go Brrr From First Principles</a>.
+    That article explains why your <em>GPU kernel</em> is slow. This one picks up where it leaves off and asks:
+    given that you understand the hardware, why is your LLM <em>server</em> still slow?
+    The factory analogy from that article carries forward; we just add a warehouse.
+  </div>
+
+  <p class="version-note">
+    <strong>Version scope:</strong> implementation-specific details were reviewed against
+    <a href="https://github.com/vllm-project/vllm/releases/tag/v0.22.1">vLLM v0.22.1</a>
+    and its stable documentation on June 13, 2026. vLLM evolves quickly, so treat backend names
+    and defaults as versioned details rather than timeless properties of the architecture.
+  </p>
+
+  <nav class="toc" aria-label="Table of contents">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#factory">The Factory, Revisited</a></li>
+      <li><a href="#phases">The Two Phases of LLM Inference</a></li>
+      <li><a href="#waste1">Waste #1: Memory Fragmentation</a></li>
+      <li><a href="#paged">The Fix: PagedAttention</a></li>
+      <li><a href="#waste2">Waste #2: The Batching Problem</a></li>
+      <li><a href="#continuous">The Fix: Continuous Batching</a></li>
+      <li><a href="#structured">Structured Decoding: Guaranteeing the Output Format</a></li>
+      <li><a href="#speculative">Speculative Decoding: Outsmarting the Sequential Constraint</a></li>
+      <li><a href="#mental-model">The Mental Model: Which Bucket Are You In?</a></li>
+      <li><a href="#source-map">Mapping the Model to vLLM's Source</a></li>
+      <li><a href="#benchmark">Benchmarking the Claims</a></li>
+      <li><a href="#together">Putting It All Together</a></li>
+    </ol>
+  </nav>
+
+  <p>
+    Consider an 80&nbsp;GB
+    <a href="https://www.nvidia.com/en-us/data-center/a100/">NVIDIA A100</a>.
+    It offers roughly 2&nbsp;TB/s of memory bandwidth and 312 TFLOPS of BF16 tensor math.
+    On paper, it should be able to serve tokens at a serious clip.
+    In practice, naïve LLM serving squanders most of that. Two independent inefficiencies in how memory is managed and how work is scheduled are responsible.
+  </p>
+
+  <p>
+    This article has two parts. The first is about those two inefficiencies and how vLLM fixes them; this is the core of what makes vLLM fast. The second covers two additional features that solve
+    categorically different problems: <strong>speculative decoding</strong> reduces per-request latency
+    by exploiting a property of transformer verification, and <strong>structured decoding</strong>
+    is a format-enforcement mechanism, not primarily a performance one: it guarantees output structure rather than
+    speeding anything up. By the end you'll have a clear mental model of which problem is which
+    and which lever to pull.
+  </p>
+
+  <p>
+    We will <em>not</em> cover: multi-GPU tensor parallelism, quantization, or API-level usage.
+    Those are real topics, but they'd dilute the ideas here.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="factory">The Factory, Revisited</h2>
+
+  <p>
+    The brrr article set up the GPU-as-factory metaphor: the GPU's compute units are the factory floor,
+    DRAM is the warehouse, and the memory bus is the supply chain connecting them.
+    The central insight there was that moving data between the warehouse and the factory floor is often
+    the bottleneck, not the factory itself.
+  </p>
+
+  <p>
+    We're going to extend that metaphor. In LLM serving, the factory floor (the GPU compute) has to work
+    with a warehouse (GPU HBM) that holds <em>per-request working state</em>. The problem is that
+    the warehouse management and job scheduling are both terrible by default.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="phases">The Two Phases of LLM Inference</h2>
+
+  <p>
+    A standard decoder-only text-generation request has two conceptual phases, and they are
+    different enough to behave like separate workloads.
+  </p>
+
+  <h3>Phase 1: Prefill</h3>
+
+  <p>
+    You send in a prompt. In an unchunked prefill, the model processes all prompt positions in one
+    forward pass. Self-attention forms an n-by-n attention-score matrix, giving standard dense
+    attention O(n²) work in the sequence length. Prefill is often <strong>compute-bound</strong>:
+    the dense projections operate over many token positions at once, creating large matrix
+    multiplications that use the GPU efficiently. Serving engines may split a long prefill into
+    chunks for scheduling, but the logical job is still to populate KV state for the prompt.
+  </p>
+
+  <p>
+    At the end of prefill, you have one output: the first generated token (sampled from the probability
+    distribution over the vocabulary at the last position).
+  </p>
+
+  <h3>Phase 2: Decode</h3>
+
+  <p>
+    Now the model needs to generate the rest of the response, one token at a time.
+    Token T must be generated before token T+1 can even start, because T+1's attention depends on T.
+    This serialization is baked into the autoregressive structure of transformers; it's not a software limitation.
+  </p>
+
+  <p>
+    Each decode step takes the single most-recently-generated token as input, runs a full forward pass
+    through all the model's layers, and produces the next token. To generate one token, the model still
+    has to load <em>all</em> of its weights through the memory bus. For Llama-3 8B in FP16,
+    that's 8 billion parameters × 2 bytes ≈ <strong>16&nbsp;GB</strong>
+    of data moving from HBM to the compute units per output token.
+    At the A100's 2&nbsp;TB/s peak bandwidth, that's an idealized lower bound of about
+    8&nbsp;ms of memory traffic per token for a single sequence; in practice, compute and memory
+    transfers overlap in hardware pipelines, and batching multiple sequences amortizes the weight
+    loading across all of them. Even so, the ratio of compute work to bytes moved stays tiny.
+    This is classic memory-bandwidth-bound territory, exactly as described in the brrr article's roofline analysis.
+  </p>
+
+<div class="diagram">Prefill:
+  Input: [tok₁ tok₂ tok₃ ... tokₙ]  ← all tokens processed in ONE step
+  Output: [tok_{n+1}]
+  Bottleneck: COMPUTE (big matrix multiplications)
+  Throughput: fast per-token, GPU saturated
+
+Decode:
+  Step 1: [tok_{n+1}] → tok_{n+2}
+  Step 2: [tok_{n+2}] → tok_{n+3}
+  Step 3: [tok_{n+3}] → tok_{n+4}
+  ...                                 ← N steps for N output tokens
+  Bottleneck: MEMORY BANDWIDTH (16 GB of weights per step, for Llama-3 8B FP16)
+  Throughput: slow per-token, compute underutilized (waiting on the bus, not the ALUs)</div>
+
+  <p>
+    A typical response of 200 tokens = 1 prefill step + 200 decode steps.
+    The factory floor spins up to full speed briefly, then grinds through 200 tiny jobs,
+    loading the entire warehouse contents for each one.
+  </p>
+
+  <h3>The KV Cache</h3>
+
+  <p>
+    During decode, each new token
+    must attend over <em>every previous token</em> to compute its output. You have two options:
+    recompute the key and value vectors for all prior tokens from scratch on every step (very expensive),
+    or cache them (sensible). The cache of all previously computed key and value tensors is the
+    <strong>KV cache</strong>.
+  </p>
+
+  <p>
+    For each token, across all layers, you store:
+  </p>
+
+  <pre>KV bytes per token =
+  2            (key + value)
+× num_layers   (32 for Llama-3-8B)
+× num_kv_heads (8)
+× head_dim     (128)
+× dtype_bytes  (2 for FP16)
+= 131,072 bytes ≈ 128 KB per token</pre>
+
+  <p>
+    A sequence currently containing 2,048 tokens uses <strong>256&nbsp;MB</strong> of KV cache.
+    The model weights themselves take about 16&nbsp;GB, giving an upper bound of ~64&nbsp;GB from
+    an 80&nbsp;GB A100 before accounting for activations, CUDA graphs, allocator state, and other
+    runtime memory. That upper bound is enough for around 500,000 cached tokens in theory.
+    But with naïve allocation, that budget disappears much faster than it should.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="waste1">Waste #1: The Memory Fragmentation Problem</h2>
+
+  <p>
+    Given that KV cache is expensive, how does a naïve serving system manage it?
+    The obvious approach: when a request arrives, pre-allocate a contiguous block of GPU memory
+      for its KV cache, sized to the <em>maximum possible sequence length</em>.
+    You need it contiguous because the attention kernels are written to assume a flat, contiguous layout.
+  </p>
+
+  <p>
+    This is a disaster for two reasons.
+  </p>
+
+  <h3>Internal fragmentation</h3>
+
+  <p>
+    You don't know how long the completed sequence will be. If you reserve KV space for 4,096 token
+    positions and the sequence finishes after using only 42, about 99% of that reservation was unused.
+    The floor section is roped off; nobody else can use it; and most of it is empty.
+  </p>
+
+  <h3>External fragmentation</h3>
+
+  <p>
+    Even if every request were exactly the right length, contiguous allocation causes holes.
+    After several requests complete and free their allocations, the free memory is scattered in gaps.
+    A new request that needs 1,000 tokens of contiguous space can't get it (even if 1,400 tokens of
+    free memory exist) because no single gap is large enough.
+  </p>
+
+  <div class="callout red">
+    <p>
+        <strong>Measured result:</strong> The
+        <a href="https://arxiv.org/abs/2309.06180">vLLM paper (SOSP '23)</a>
+        found that under this naïve allocation strategy,
+      <strong>60–80% of reserved KV cache memory goes to waste</strong> due to fragmentation.
+      Your GPU is mostly holding empty reservations.
+    </p>
+  </div>
+
+  <p>The warehouse analogy makes this visceral:</p>
+
+  <div class="callout">
+    <p>
+      Imagine a warehouse where every incoming order, before a single parcel arrives, gets its own
+      section of floor roped off, sized for the largest order that could ever come in.
+      Most orders are small. Most of the floor sits empty. New orders can't get started because
+      there's no space, even though 80% of the floor is technically unoccupied, just held by
+      reservations that may never fill.
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="paged">The Fix: PagedAttention</h2>
+
+  <p>
+    The insight behind PagedAttention is simple: don't pre-allocate. Manage the warehouse with
+    fixed-size shelf units, assigned on demand.
+  </p>
+
+  <p>
+    Instead of one big contiguous region per request, divide GPU HBM into small, fixed-size
+      <strong>physical blocks</strong>. Using a 16-token block as a concrete example,
+      each block holds KV tensors for 16 token positions. The block size is configurable and can
+      depend on the platform and attention backend. For Llama-3-8B in FP16, this example works out
+      to 16 × 128&nbsp;KB ≈ 2&nbsp;MB per block.
+  </p>
+
+  <p>
+    Each in-flight request gets a <strong>block table</strong>: a small ledger that maps
+    "logical block 0 → physical block #47, logical block 1 → physical block #103, ..."
+    The blocks don't need to be contiguous. The block table is the indirection layer that makes
+    non-contiguous storage look seamless to the attention kernel.
+  </p>
+
+<div class="diagram">Naïve allocation (contiguous, pre-reserved):
+┌──────────────────────────────────────────────────────┐
+│ Request A (reserved 4096 tok = 512 MB) ░░░░░░░░░░░░ │  ← 90% empty
+│ Request B (reserved 4096 tok = 512 MB) ░░░░░░░░░░░░ │  ← 85% empty
+│ Request C (reserved 4096 tok = 512 MB) ░░░░░░░░░░░░ │  ← 95% empty
+│ [no space for new requests]                          │
+└──────────────────────────────────────────────────────┘
+░ = reserved but empty
+
+PagedAttention (16-token physical blocks, on demand):
+┌──────────────────────────────────────────────────────┐
+│[A₀][B₀][A₁][C₀][B₁][A₂][C₁][B₂][D₀][D₁][E₀][ ][ ]│
+│[ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ][ ] │
+└──────────────────────────────────────────────────────┘
+Each request's blocks tracked via a block table (ledger).
+Free blocks instantly available to any request.</div>
+
+  <p>
+    Blocks are allocated as the sequence grows. Starting from an empty cache, a sequence containing
+    42 total KV positions (prompt plus generated tokens) uses 3 blocks (⌈42/16⌉), with at most
+    15 empty slots in the final partial block. In a real request, decode tokens first consume any
+    space left in the prompt's final block.
+    Worst-case waste: the last block is nearly empty. The vLLM paper reports that paging keeps this
+    internal waste below <strong>4%</strong> in its design, down from 60–80% under the compared systems.
+  </p>
+
+  <p>
+    In the original paper, PagedAttention reduced internal KV-cache waste from the 60–80% reported
+    for the compared systems to below 4%. Across its tested OPT-13B–175B workloads, vLLM delivered
+    2–4× the throughput of Orca and FasterTransformer at comparable latency.
+  </p>
+  <p class="source-note">
+    Source: <a href="https://arxiv.org/abs/2309.06180">Kwon et al., SOSP 2023</a>.
+    These are paper results, not measurements performed for this article.
+  </p>
+
+  <h3>Bonus: Copy-on-Write for Beam Search</h3>
+
+  <p>
+    Beam search keeps N candidate continuations alive simultaneously, all sharing the same prompt prefix.
+    Under naïve allocation, you'd copy the entire KV cache for each beam, like photocopying the
+    whole order ledger every time you branch.
+  </p>
+
+  <p>
+    With PagedAttention, all beams share the parent's blocks by reference. The block table for each
+    beam points to the same physical blocks, like multiple order ledgers pointing to the same shared
+    shelf section. A block only gets physically copied when a beam actually diverges and needs to write
+      new KV data into it. Pruned beams simply drop their ledger entries; once no sequence references
+      a block, it can return to the free pool without copying the shared prefix.
+  </p>
+
+  <h3>Bonus: Prefix Caching</h3>
+
+  <p>
+    Many production workloads share a system prompt: "You are a helpful assistant. Today's date is..."
+    Under naïve allocation, every request has to recompute the KV vectors for this shared prefix from
+    scratch on every prefill. PagedAttention supplies the fixed-size block substrate that makes
+    sharing practical, but it does not automatically turn every block into a reusable cache entry.
+    vLLM's separate <strong>automatic prefix caching</strong> feature hashes completed blocks and
+    looks them up when a later request begins with the same prefix.
+  </p>
+
+  <p>
+      vLLM uses a forward hash chain: each full block's cache key includes its token IDs, its
+      parent block's hash, and any extra values needed to distinguish contexts such as LoRA adapters,
+      multimodal inputs, or cache salts.
+      When a new request arrives, vLLM walks forward through its prompt blocks, looking up each
+      block's hash in the cache. It reuses every matching leading block and stops at the first miss.
+      Chaining makes each key represent the entire prefix leading to that block. Hashing is still a
+    security and correctness boundary because finite hashes can collide. vLLM exposes hash-algorithm
+    choices, including SHA-256 variants, and supports cache salts for isolation. The
+      <a href="https://docs.vllm.ai/en/stable/design/prefix_caching/">prefix-caching design document</a>
+      covers those tradeoffs and cache isolation.
+  </p>
+
+  <p>
+    This is the warehouse equivalent of a shared "standard kit" shelf: common items that go into most
+    orders are stocked once and referenced from multiple order ledgers.
+      For workloads with heavy shared prefixes, this can remove substantial repeated prefill work.
+      The gain depends on the reusable prefix length, cache-hit rate, prompt-to-output ratio, and
+      whether the workload is prefill-bound. Prefix caching does not accelerate the decode tokens
+      that follow the shared prompt.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="waste2">Waste #2: The Batching Problem</h2>
+
+  <p>
+    Even with perfect memory management, there's a separate problem: GPU idle time. The issue is how requests are traditionally grouped into batches.
+  </p>
+
+  <p>
+    <strong>Static batching</strong> works like this:
+  </p>
+  <ol>
+    <li>Collect N requests</li>
+    <li>Run forward passes until the <em>longest</em> sequence in the batch finishes generating</li>
+    <li>Return all N results</li>
+    <li>Start the next batch</li>
+  </ol>
+
+  <p>
+    The problem is step 2. Imagine a batch of 32 requests where 30 of them generate 50-token responses
+    and 2 of them generate 500-token responses. The 30 short requests finish in one-tenth of the time.
+    But the GPU keeps running, still doing real work for the 2 long requests, while the 30 completed slots
+    sit idle, producing nothing.
+  </p>
+
+  <div class="callout red">
+    <p>
+      <strong>The result:</strong> under mixed-length workloads, the GPU spends a significant fraction
+      of its time running forward passes for just a handful of long stragglers while most batch slots
+      sit empty. The factory floor has 32 stations. 30 finished an hour ago. 2 are still running.
+      The other 30 stations are empty and dark.
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="continuous">The Fix: Continuous Batching</h2>
+
+  <p>
+    There is no fundamental reason to wait for an entire request-level batch.
+    After each model iteration, account for completed work, release capacity, and reconsider which
+    waiting requests can be admitted at the next scheduling opportunity.
+  </p>
+
+  <p>
+    This is <strong>iteration-level scheduling</strong>, as opposed to request-level scheduling.
+    The scheduling granularity drops from "whole request" to a token-budgeted model step.
+  </p>
+
+  <p>
+    vLLM's scheduler maintains two primary collections:
+  </p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th scope="col">Queue</th><th scope="col">What's in it</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>waiting</code></td><td>Requests awaiting admission or resumption, including new arrivals and preempted requests</td></tr>
+      <tr><td><code>running</code></td><td>Admitted requests with token work in progress; this can include prefill, decode, or speculative-token work</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    These names describe request lifecycle, not separate prefill and decode queues. In vLLM V1,
+    the scheduler tracks how many tokens each request already has computed and how many known tokens
+    it needs to catch up to. At each step it assigns token work subject to a global token budget,
+    a maximum number of running requests, encoder constraints where relevant, and available KV blocks.
+    It considers running requests first, then admits or resumes waiting requests while those budgets allow.
+  </p>
+
+  <p>
+    If allocating the required KV slots fails, the scheduler may preempt a lower-priority running
+    request. Preemption frees that request's block references, resets its computed-token count, and
+    puts it back at the front of <code>waiting</code>. If automatic prefix caching is enabled and the
+    released full blocks have not been evicted or overwritten, a later cache lookup may recover much
+    of that work; it is not guaranteed. Completed requests also release their references so their
+    capacity can be reused. This iteration-level resource accounting is what keeps the active batch
+    from draining toward a few long stragglers.
+  </p>
+
+<div class="diagram">Static batching:
+  t=0  [A████████████████] [B████████] [C████████████████████████████████]
+  t=50                   ↑                                               ↑
+                  B finishes here.              A finishes here.   C finishes here.
+                  GPU still runs for A and C.   GPU still runs for C.
+
+  Slots B completed: idle for 450 steps. Slot A completed: idle for 200 steps.
+
+Continuous batching:
+  t=0  [A████████████] [B████] [C██████████████████████]
+  t=50                ↑ B finishes → D is admitted next
+  t=130               ↑ A finishes → E is admitted next
+  ...
+    Under sustained load, completed slots can be refilled at the next scheduling opportunity.</div>
+
+  <h3>Chunked Prefill: Solving Head-of-Line Blocking</h3>
+
+  <p>
+    Continuous batching creates a subtle new problem. Prefill is compute-intensive:
+    processing a 32,000-token prompt in a single step takes a long time,
+    during which <em>all</em> the ongoing decode steps are blocked.
+    A single long-context request can cause a latency spike for every other user.
+  </p>
+
+  <p>
+      <strong>Chunked prefill</strong> fixes this by splitting large prefills according to the
+      scheduler's token budget and interleaving them with decode work.
+      Instead of one enormous prefill step that blocks the factory floor for a second,
+      you do N small prefill steps, each taking a normal amount of time, mixed in with
+      the regular flow of decode work. The configured budget trades inter-token latency against
+      time-to-first-token and throughput; values such as 2,048 tokens are tuning points, not a
+      universal chunk size. See vLLM's
+      <a href="https://docs.vllm.ai/en/stable/configuration/optimization/">optimization guidance</a>.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="structured">Structured Decoding: Guaranteeing the Output Format</h2>
+
+  <p>
+    So far, all our optimizations have been about generating tokens <em>faster</em>.
+    Structured decoding is a different kind of problem: generating tokens that are
+    <em>guaranteed to conform to a supported schema or grammar</em>.
+  </p>
+
+  <p>
+    Consider a production use case: you're using an LLM to fill out a JSON form.
+    The model's sampling process draws from a probability distribution over ~128,000 vocabulary tokens.
+    Nothing inherent in the model prevents it from generating <code>}{</code> in the middle of a JSON object,
+    or a string where an integer is required. You can nudge it with prompting,
+    but nudges are probabilistic. For tool calling, API integrations, and structured pipelines,
+    you often need a hard guarantee about syntax and field shape.
+  </p>
+
+  <div class="callout red">
+    <p>
+      <strong>Important boundary:</strong> schema-valid does not mean factually correct.
+      Structured decoding can guarantee that <code>age</code> is an integer and that required
+      fields exist; it cannot guarantee that the model chose the right integer or supplied true facts.
+    </p>
+  </div>
+
+  <h3>The Mechanism: Logit Masking</h3>
+
+  <p>
+    The model's final layer produces a <strong>logit vector</strong>: one floating-point score
+    for every token in the vocabulary. Before sampling, you apply a <strong>mask</strong>
+    that sets the scores of invalid tokens to −∞.
+    After softmax, those tokens have exactly zero probability and can never be sampled.
+    This is a hard constraint, not a soft preference.
+  </p>
+
+  <div class="callout blue">
+    <p>
+      <strong>Factory analogy:</strong> imagine a quality inspector stationed at the end of each
+      step on the conveyor. After the model proposes candidate next parts, the inspector checks each
+      one against the order spec. Parts that would violate the spec get pulled from the belt before
+      the picker selects. Whatever remains is valid by construction.
+    </p>
+  </div>
+
+  <h3>How the Inspector Knows What's Valid: FSMs and PDAs</h3>
+
+  <p>
+    For a given schema or grammar, you compile it into a <strong>grammar recognizer</strong>:
+    a structure that, given the tokens generated so far, returns the set of valid next tokens.
+    The implementation depends on the complexity of the constraint.
+    For regular constraints (a regex, an enum, a fixed string format), an
+    <strong>FSM</strong> suffices: a directed graph of states and transitions where each
+    state represents "where we are in the pattern" and each edge is labeled with valid tokens.
+    For recursive structures such as nested JSON, where objects can contain objects and
+    arrays can contain arrays, an FSM has no way to track nesting depth, so a
+    <strong>stack-based PDA</strong> is used instead (described below).
+    At each decode step, you query the recognizer for the current state to get the set of
+    valid next tokens, then apply that set as your mask.
+  </p>
+
+  <p>
+    For example, after outputting the opening brace <code>{</code>, the valid next tokens are
+    whitespace, the start of a permitted string key, and, if the grammar allows an empty object,
+    the closing brace <code>}</code>. After outputting a colon following a key,
+    valid next tokens are those that can start a JSON value. The grammar recognizer encodes all of this.
+  </p>
+
+  <p>
+    FSMs work well for regular languages: regex patterns, simple string formats, enums.
+    But full JSON is <em>not</em> a regular language: arbitrarily nested objects and arrays require
+    a stack to track opening and closing brackets. An FSM has no memory of depth and cannot
+    correctly handle <code>{"a": {"b": [1, 2]}}</code> in general.
+    <strong>Pushdown automata (PDAs)</strong> add a stack to FSMs, making them expressive enough
+    for any context-free grammar. Think of a PDA as a collection of FSMs, one per grammar rule,
+    that can call into each other recursively; the stack tracks which rule invoked which.
+    XGrammar uses a stack-based approach, allowing it to enforce recursive structures that
+    a pure finite-state recognizer cannot represent in general. (XGrammar is one of several backends vLLM supports;
+    the actual backend selected for a given request depends on schema type; see below.)
+  </p>
+
+  <h3>The Performance Cost</h3>
+
+  <p>
+    Mask computation happens on every decode step, after the model's forward pass
+    and before sampling. With earlier backends (Outlines), FSM compilation was slow enough
+    to meaningfully inflate time-to-first-token, and complex grammars could take tens of
+    milliseconds per step, completely dominating the inference latency.
+  </p>
+
+  <p>
+    A January 2025 vLLM
+    <a href="https://vllm.ai/blog/2025-01-14-struct-decode-intro">integration benchmark</a>
+    reported much lower grammar-processing overhead and roughly 5× better time per output token
+    under its tested load when using XGrammar instead of the then-current Outlines integration.
+    Treat that as a versioned benchmark, not a universal multiplier.
+    In vLLM v0.22.1, the stable
+    <a href="https://docs.vllm.ai/en/stable/features/structured_outputs/">structured-output documentation</a>
+    lists XGrammar and Guidance as supported backends. The default <code>auto</code> mode chooses
+    an appropriate backend based on request details.
+  </p>
+
+  <p>
+    In a batch of 32 requests where 8 use structured decoding with different
+    schemas, each constrained sequence has its own recognizer state and valid-token mask.
+    Compilation, mask generation, and mask application all add work; where that work runs depends
+    on the backend and vLLM version. The overhead therefore grows with constrained batch size and
+    schema complexity, and should be measured for the actual workload.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="speculative">Speculative Decoding: Outsmarting the Sequential Constraint</h2>
+
+  <p>
+    Recall the fundamental problem with decode: it's sequential. You can't generate token T+1 until
+    you have token T, because T+1's attention computation depends on T. This is structural, not a software limitation.
+  </p>
+
+  <p>Or is it?</p>
+
+  <p>
+    <strong>Speculative decoding</strong> exploits a loophole. If someone hands the target
+    model several proposed tokens, it can score those positions together rather than produce them
+    through separate sequential decode iterations. When proposing and verifying costs less than
+    ordinary decoding, multiple output tokens can be accepted per target-model step.
+  </p>
+
+  <h3>The Classic Draft-Model Variant</h3>
+
+  <p>
+    The best-known form uses a smaller model to propose tokens. This is one variant of speculative
+    decoding, not the definition of the whole technique.
+  </p>
+
+  <p>The protocol described by Leviathan et al.:</p>
+  <ol>
+    <li>A much smaller, tokenizer-compatible <strong>draft model</strong> speculatively generates N tokens ahead using its own autoregressive sampling.</li>
+    <li>The large <strong>target model</strong> scores the proposed positions together instead of using N separate target-model decode iterations.</li>
+    <li>For each proposed token in order: accept it with probability min(1, p_target / p_draft). If accepted, move to the next. At the first rejection, sample the next token from a corrected residual distribution (specifically, the normalized positive part of (p_target − p_draft)), then stop.</li>
+    <li>If all N draft tokens are accepted, sample one additional token from the target model's distribution at the next position. The verification pass has already produced those logits, so a fully accepted round can advance by N+1 tokens.</li>
+    <li>Under the algorithm's assumptions, the <em>output distribution</em> matches ordinary target-model sampling rather than approximating it.</li>
+  </ol>
+  <p class="source-note">
+    Source: <a href="https://arxiv.org/abs/2211.17192">Fast Inference from Transformers via Speculative Decoding</a>.
+  </p>
+
+  <div class="callout blue">
+    <p>
+      <strong>Factory analogy:</strong> a junior worker speculatively pre-stages the next 5 steps
+      of an order, setting out parts and pre-assembling sub-components. A senior checker then verifies
+      all 5 in one target-model verification step. If the senior signs off, several steps advance
+      together; if the checker rejects at step 3, steps 1 and 2 are kept. Proposal and verification
+      still cost time, so the real gain is smaller than "5 steps for the price of 1."
+    </p>
+  </div>
+
+  <p>
+    The result depends on more than <strong>acceptance rate</strong>. Draft cost, verification cost,
+    batch size, request rate, sequence length, and GPU utilization all matter:
+  </p>
+
+  <div class="table-wrap">
+  <table>
+    <caption style="caption-side:bottom; font-size:0.82rem; color:#6b7280; text-align:left; padding-top:8px;">
+      Qualitative guide only. Benchmark the exact model, hardware, and traffic pattern you plan to serve.
+    </caption>
+    <thead>
+      <tr><th scope="col">Workload</th><th scope="col">Likely draft agreement</th><th scope="col">Serving implication</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>Code completion</td><td>Often high</td><td>A promising case when the draft is cheap and well matched</td></tr>
+      <tr><td>Structured / formulaic text</td><td>Often moderate to high</td><td>Can reduce latency, but grammar processing and batching still matter</td></tr>
+      <tr><td>Open-ended generation</td><td>Variable</td><td>Extra proposal overhead can erase the benefit</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    The draft model's guesses are best when the next tokens are predictable: code, templates,
+    factual completions. They're worst when the model is being creative or the distribution is flat.
+    Speculative decoding is not a general-purpose win; it is most attractive in memory-bound,
+    low-to-medium request-rate regimes where verification can amortize target-model work.
+  </p>
+
+  <p>
+    Note that speculative decoding addresses a different bottleneck than PagedAttention and
+    continuous batching. Those fix memory capacity and GPU utilization.
+    Speculative decoding reduces the effective number of sequential steps required,
+    which can reduce per-request latency when proposal and verification overheads are favorable.
+    At high load, the extra work can reduce throughput, so measure both latency and capacity.
+  </p>
+
+  <p>
+    Modern vLLM supports several proposal mechanisms beyond a separate draft model, including
+    <a href="https://docs.vllm.ai/en/stable/features/speculative_decoding/">EAGLE, multi-token prediction,
+    n-gram, suffix, and parallel draft approaches</a>. They share the propose-and-verify idea but
+    have different compatibility, memory, and performance tradeoffs.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="mental-model">The Mental Model: Which Bucket Are You In?</h2>
+
+  <p>
+    The brrr article ends with a diagnostic framework for GPU kernels: is your bottleneck compute,
+    memory bandwidth, or overhead? Each answer points to a different class of optimization.
+    The same discipline applies to LLM serving, but the bottlenecks are different.
+  </p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Symptom</th>
+        <th scope="col">Likely bottleneck</th>
+        <th scope="col">Evidence to collect</th>
+        <th scope="col">Candidate levers</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>GPU runs out of memory; can't serve more concurrent users even though GPU isn't busy</td>
+        <td><strong>Memory capacity</strong></td>
+        <td>KV-cache usage approaches its configured limit; admissions stall or preemptions rise; model weights and runtime allocations leave little room for KV blocks</td>
+        <td>PagedAttention; shorter limits; weight quantization to free HBM; KV-cache quantization to shrink the cache directly</td>
+      </tr>
+      <tr>
+        <td>GPU utilization is low while requests are queued; throughput is below the expected operating point</td>
+        <td><strong>Scheduling or batch-shape underutilization</strong></td>
+        <td>Running-token count and batch occupancy stay low; a timeline shows gaps, stragglers, or long prefills delaying decode work</td>
+        <td>Continuous batching; tune token and sequence budgets; chunked prefill; inspect CPU and networking overhead before blaming the GPU</td>
+      </tr>
+      <tr>
+        <td>Per-token latency is high even with good GPU utilization</td>
+        <td><strong>Decode bandwidth, kernels, or communication</strong></td>
+        <td>A profiler shows high HBM traffic or communication time; TPOT changes with batch size, quantization, or parallelism strategy</td>
+        <td>Speculative decoding; weight quantization; kernel/backend tuning; reconsider tensor-parallel topology</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    Use this table to generate hypotheses, not final diagnoses. The same symptom can have several
+    causes: low utilization may come from request arrival rate, CPU tokenization, synchronization,
+    or networking rather than batching; high TPOT may come from collectives or an inefficient
+    attention backend rather than raw HBM bandwidth. Measure the queue, cache, batch, and profiler
+    signals before choosing a lever. Also keep the two forms of quantization distinct:
+    <em>weight quantization</em> reduces model memory and can indirectly leave more HBM for KV blocks,
+    while <em>KV-cache quantization</em> reduces bytes stored per cached token.
+  </p>
+
+  <p>
+    PagedAttention and continuous batching together are the core of what makes vLLM fast.
+    The vLLM paper measured <strong>2–4× higher throughput at comparable latency</strong>
+    versus Orca and FasterTransformer across OPT-13B through OPT-175B on ShareGPT and Alpaca workloads.
+    Speculative decoding is a situational booster for latency-sensitive, predictable workloads
+    where bandwidth is the remaining ceiling.
+  </p>
+
+  <div class="callout blue">
+    <p>
+      <strong>Where does structured decoding fit?</strong> It doesn't belong in this table.
+      The three rows above are all about <em>hardware resource saturation</em>: you're diagnosing
+      which physical limit you've hit. Structured decoding is a <em>format correctness</em> requirement:
+      your outputs have the wrong format, which has nothing to do with which resource is bottlenecked.
+      You can have a perfectly efficient server (high throughput, low latency, good utilization)
+      that still returns malformed JSON. Logit masking + FSM/PDA solves that class of problem
+      independently of everything else in the table. It does not make the values inside that JSON true.
+    </p>
+  </div>
+
+  <p>
+    Diagnose before treating. Applying speculative decoding to a system that's
+    memory-capacity-bound may make it worse if the method requires another model in memory.
+    Weight-free proposers such as n-gram matching avoid that cost, but they still do not create
+    additional KV-cache capacity.
+    Applying prefix caching to a workload with no shared prefixes wastes implementation effort.
+    Know which bucket you're in.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="source-map">Mapping the Model to vLLM's Source</h2>
+
+  <p>
+    The architectural story above becomes more concrete in vLLM v0.22.1's V1 implementation.
+    The scheduler's own comment explicitly says there is no separate "decoding phase" or "prefill
+    phase" in the scheduler. Instead, each request has a computed-token frontier, and
+    <code>schedule()</code> assigns enough work to move that frontier toward the request's known
+    prompt, output, and speculative tokens.
+  </p>
+
+  <pre>token_budget = max_tokens_for_this_step
+
+for request in running:
+    work = min(tokens_needed_to_catch_up(request), token_budget)
+    blocks = allocate_slots(request, work)
+    if blocks are unavailable:
+        preempt a lower-priority request and retry
+
+for request in waiting:
+    cached_prefix = get_computed_blocks(request)
+    work = min(remaining_known_tokens(request), token_budget)
+    admit request only if its KV slots can be allocated</pre>
+
+  <p>
+    That pseudocode is intentionally simplified, but it preserves the control flow worth noticing:
+  </p>
+
+  <ul>
+    <li>
+      <a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/sched/scheduler.py#L329-L448"><code>Scheduler.schedule()</code></a>
+      computes token work for running requests under a step-wide budget and asks the KV-cache manager
+      for slots. The
+      <a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/sched/scheduler.py#L590-L731">waiting-request path</a>
+      later checks cached prefixes and admits new or resumed work under the remaining budgets.
+    </li>
+    <li>
+      <a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/kv_cache_manager.py#L194-L234"><code>KVCacheManager.get_computed_blocks()</code></a>
+      asks for the longest eligible cache hit, while
+      <a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/kv_cache_manager.py#L236-L425"><code>allocate_slots()</code></a>
+      accounts for cached, newly computed, external, and lookahead tokens before allocating blocks.
+    </li>
+    <li>
+      <a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/kv_cache_utils.py#L503-L568"><code>generate_block_hash_extra_keys()</code> and <code>hash_block_tokens()</code></a>
+      show the prefix hash chain directly: the parent hash, current block tokens, and contextual
+      keys such as LoRA, multimodal data, and cache salt contribute to the next block hash.
+    </li>
+    <li>
+      <a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/block_pool.py#L402-L433"><code>BlockPool.touch()</code> and <code>free_blocks()</code></a>
+      implement sharing with reference counts. A cache hit increments references; releasing a request
+      decrements them, and zero-reference blocks become eviction candidates.
+    </li>
+    <li>
+      <a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/sched/scheduler.py#L929-L949"><code>Scheduler._preempt_request()</code></a>
+      frees a request's KV blocks, resets its computed-token frontier, and returns it to
+      <code>waiting</code>. This is the concrete cost behind the word "preemption."
+    </li>
+  </ul>
+
+  <p>
+    Reading these paths also exposes the tradeoffs hidden by the clean warehouse metaphor.
+    Paging adds block-table metadata and requires attention kernels that understand indirect storage.
+    Prefix caching spends CPU work on hashing and only reuses full eligible blocks. Continuous
+    batching needs admission, fairness, and preemption policies. Chunked prefill improves decode
+    responsiveness but changes the tradeoff among time to first token, inter-token latency, and
+    throughput. The mechanisms are useful because those costs are smaller than the waste they remove
+    for the target workload, not because they are free.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="benchmark">Benchmarking the Claims</h2>
+
+  <p>
+    The numerical results above come from cited papers and project benchmarks; they are not original
+    measurements from this article. To test whether the same ideas help your workload, hold the model,
+    GPU, software version, input distribution, output length, and sampling settings constant, then vary
+    one serving feature at a time.
+  </p>
+
+  <p>
+    vLLM's <a href="https://docs.vllm.ai/en/stable/cli/bench/serve/">serving benchmark CLI</a>
+    reports the metrics that matter: request and token throughput, time to first token (TTFT),
+    time per output token (TPOT), and inter-token latency. A minimal benchmark shape is:
+  </p>
+
+  <pre>vllm serve MODEL [configuration-under-test]
+
+vllm bench serve \
+  --backend openai \
+  --model MODEL \
+  --dataset-name random \
+  --input-len 1024 \
+  --output-len 256 \
+  --num-prompts 1000 \
+  --request-rate RATE \
+  --max-concurrency CONCURRENCY \
+  --save-result \
+  --save-detailed</pre>
+
+  <p>
+    Run warm-ups first, repeat each configuration, and report median plus tail latency rather than
+    one favorable run. Sweep concurrency instead of quoting a single requests-per-second number:
+    an optimization that improves latency at concurrency 1 may reduce maximum throughput under load.
+    Record the exact vLLM commit or release, model revision, GPU, driver, CUDA version, command line,
+    and raw JSON results so another engineer can reproduce the chart.
+  </p>
+
+  <hr />
+
+  <h2 id="together">Putting It All Together</h2>
+
+  <p>
+    Let's trace a request through a well-configured vLLM instance to see how these pieces interact:
+  </p>
+
+  <ol>
+    <li>
+      <strong>Request arrives</strong> → enters the <code>waiting</code> queue.
+      If automatic prefix caching is enabled, the scheduler checks for matching blocks from this prompt's prefix.
+      If yes, those KV blocks are reused, avoiding the corresponding repeated prefill computation.
+    </li>
+    <li>
+      <strong>Prefill</strong> → the prompt is processed (possibly chunked to avoid blocking decodes).
+      Physical KV blocks are allocated as needed via PagedAttention.
+    </li>
+    <li>
+      <strong>Scheduling and model loop</strong> → each iteration, the scheduler runs the <code>running</code>
+      requests it can fit under the current token and KV budgets; this may include prompt chunks,
+      decode tokens, or speculative-token work. New blocks are allocated as each request's KV cache grows.
+      If the request uses structured decoding, a logit mask is computed and applied before sampling.
+      If speculative decoding is enabled, the configured proposer generates candidate tokens and the
+      target model verifies them.
+    </li>
+    <li>
+      <strong>Completion</strong> → the sequence reaches EOS or another stopping condition.
+      Its block references are released. Unreferenced blocks become reclaimable; with prefix caching,
+      reusable blocks may remain cached until the allocator needs to evict them. The scheduler can
+      admit more waiting work at the next scheduling opportunity.
+    </li>
+  </ol>
+
+  <p>
+    The warehouse avoids large per-request reservations. Under sustained load, the scheduler can refill
+    capacity as sequences finish instead of waiting for an entire static batch. A proposer may stage the
+    next few parts speculatively. When the order requires a specific format, the quality inspector checks every step.
+  </p>
+
+  <p>
+    That is vLLM: a coherent set of answers to two distinct questions:
+    <em>where exactly is this factory wasting effort?</em> (PagedAttention, continuous batching, speculative decoding)
+    and <em>how do we guarantee the output has the required structure?</em> (structured decoding).
+    The first set of answers targets performance. The second makes downstream parsing dependable,
+    while semantic accuracy remains the model and application's responsibility.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2>Further Reading</h2>
+
+  <ul>
+    <li><a href="https://horace.io/brrr_intro.html">Making Deep Learning Go Brrr From First Principles</a> — Horace He. The article that inspired this one. Read it first if you haven't.</li>
+    <li><a href="https://arxiv.org/abs/2309.06180">Efficient Memory Management for Large Language Model Serving with PagedAttention</a> — Kwon et al., SOSP 2023. The original vLLM paper. Dense but worth it.</li>
+    <li><a href="https://docs.vllm.ai/en/stable/design/prefix_caching/">Automatic Prefix Caching</a> — vLLM's current design document for block hashing, allocation, and eviction.</li>
+    <li><a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/sched/scheduler.py">V1 scheduler source at v0.22.1</a> — token budgeting, admission, KV allocation, and preemption in the pinned implementation.</li>
+    <li><a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/kv_cache_manager.py">V1 KV-cache manager source at v0.22.1</a> — prefix-cache lookup, slot allocation, and block release.</li>
+    <li><a href="https://docs.vllm.ai/en/stable/features/speculative_decoding/">Speculative Decoding</a> — current vLLM documentation covering draft-model, EAGLE, MTP, n-gram, suffix, and related methods.</li>
+    <li><a href="https://arxiv.org/abs/2211.17192">Fast Inference from Transformers via Speculative Decoding</a> — the classic exact draft-and-verify algorithm.</li>
+    <li><a href="https://vllm.ai/blog/2025-01-14-struct-decode-intro">Structured Decoding in vLLM: a gentle introduction</a> — the official vLLM blog post on structured decoding.</li>
+    <li><a href="https://www.aleksagordic.com/blog/vllm">Inside vLLM: Anatomy of a High-Throughput LLM Inference System</a> — a detailed code-level walkthrough.</li>
+    <li><a href="https://insujang.github.io/2024-01-07/llm-inference-continuous-batching-and-pagedattention/">LLM Inference: Continuous Batching and PagedAttention</a> — clear derivation of the continuous batching math.</li>
+  </ul>
+
+  <div class="footer">
+    <p>Written by Rohan with help from the vLLM SOSP '23 paper, current vLLM documentation, the vLLM blog, and the factory metaphor that Horace He built and graciously left for others to extend.</p>
+  </div>
+
+</div>
+</article>
+</main>
+</body>
+</html>

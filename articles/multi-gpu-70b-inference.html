@@ -309,7 +309,8 @@ Llama-3-70B ≈ 70,000,000,000 × 2 = 140 GB</pre>
     The KV cache headroom column matters, but reading it requires one more step.
     For Llama-3-70B the full FP16/BF16 KV cache costs <strong>320&nbsp;KiB per token</strong>
     (<code>2 × 80 layers × 8 KV heads × 128 dim × 2 bytes</code>); under tensor parallelism,
-    KV heads are sharded across TP ranks just like weight matrices. Llama-3-70B has 8 GQA KV heads,
+    KV heads are sharded across the TP ranks (each rank is one GPU in the parallel group) just like
+    weight matrices. Llama-3-70B has 8 GQA KV heads,
     so at TP=8 each GPU holds exactly 1 KV head: <strong>40&nbsp;KiB per token per GPU</strong>.
     The effective capacity is the total headroom across all GPUs divided by the full 320&nbsp;KiB/token cost:
   </p>
@@ -320,9 +321,11 @@ TP=8 capacity: (8 × 62.5 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 745
   (theoretical upper bound before runtime overhead)</pre>
 
   <p>
-    TP=8 distributes both compute and KV storage across GPUs,
-    turning what looked like tight headroom per GPU into a large collective pool.
-    Runtime overhead (NCCL buffers, CUDA graphs, activation memory) will reduce these numbers in practice.
+    At TP=8 each GPU holds only 17.5&nbsp;GB of weights, leaving ~62.5&nbsp;GB free on every GPU.
+    Because each token's KV is sharded across all 8 ranks, that per-GPU headroom adds up into one
+    shared pool: 8 × 62.5 ≈ 500&nbsp;GB effective, not the 62.5&nbsp;GB a single GPU appears to offer.
+    That pooled capacity is what produces the ~745-session figure above. Runtime overhead
+    (NCCL buffers, CUDA graphs, activation memory) will reduce these numbers in practice.
   </p>
 
   <p>
@@ -342,7 +345,7 @@ TP=8 capacity: (8 × 62.5 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 745
   <h3>The Mechanism</h3>
 
   <p>
-    In the classic Megatron-style pattern, TP uses two complementary layer types.
+    In the classic <a href="https://arxiv.org/abs/1909.08053">Megatron-style pattern</a>, TP uses two complementary layer types.
   </p>
 
   <p>
@@ -351,7 +354,23 @@ TP=8 capacity: (8 × 62.5 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 745
     Every GPU receives the same input and independently computes a shard of the output.
     The results remain partitioned for the following row-parallel layer, so this projection
     does not require an immediate reduction.
+    This independence comes directly from which dimension is split: each output column of the result
+    depends only on the corresponding weight columns — never on another GPU's slice.
+    GPU 0 evaluates <code>x @ W[:,0:d/4]</code>, GPU 1 evaluates <code>x @ W[:,d/4:d/2]</code>,
+    and so on; these are fully disjoint column ranges of the same matrix multiply.
   </p>
+
+<div class="diagram">Column-parallel layer (TP=4), no communication needed:
+
+  Every GPU gets the SAME full input x and holds a column shard of W:
+         [GPU 0]        [GPU 1]        [GPU 2]        [GPU 3]
+         x (full)       x (full)       x (full)       x (full)
+         W[:,0:d/4]     W[:,d/4:d/2]   W[:,d/2:3d/4]  W[:,3d/4:d]
+              ↓              ↓              ↓              ↓
+         out[0:d/4]     out[d/4:d/2]   out[d/2:3d/4]  out[3d/4:d]
+
+  Output stays split and feeds straight into the row-parallel layer.
+  No AllReduce in this layer.</div>
 
   <p>
     <strong>Row-parallel layers</strong> (attention output projection, FFN down-projection):
@@ -359,9 +378,15 @@ TP=8 capacity: (8 × 62.5 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 745
     prior layer's output and computes a <em>partial sum</em> of the final output.
     These partial sums must be summed across all GPUs via an <strong>AllReduce</strong>
     before the next layer can begin.
+    This assignment works because the shard boundaries match: the column-parallel layer split
+    the weight along the <em>output</em> dimension (e.g. columns 0:d/4 on GPU 0), and the
+    row-parallel layer splits along the <em>input</em> dimension — the same d/4 slice, now
+    viewed as an input row range. GPU 0's output from the first layer is exactly the input
+    rows GPU 0 needs for the second layer, so no intermediate communication is required between
+    the two.
   </p>
 
-<div class="diagram">Row-parallel layer (TP=4) — where AllReduce happens:
+<div class="diagram">Row-parallel layer (TP=4), where AllReduce happens:
 
   Each GPU holds a shard of the input (from the prior column-parallel layer):
          [GPU 0]        [GPU 1]        [GPU 2]        [GPU 3]
@@ -374,6 +399,38 @@ TP=8 capacity: (8 × 62.5 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 745
                       (every GPU gets the full output)
                               ↓
                         Complete output → next layer</div>
+
+  <p>
+    The ordering is deliberate. A column-parallel layer feeds a row-parallel layer, and the
+    activation between them is element-wise, so each GPU keeps working on its own shard with
+    no communication until the single AllReduce at the end of the pair.
+    The non-linearity is the key constraint: element-wise functions like GeLU or SiLU applied
+    to a shard produce the same result as applying them to the full tensor and then taking the
+    shard — so each GPU can run the activation independently. Reversing the order breaks this.
+    If the up-projection were row-parallel (first layer) and the down-projection column-parallel
+    (second layer), each GPU would hold a <em>partial sum</em> after the first layer, not a true
+    shard. Because GeLU is non-linear,
+    <code>GeLU(partial_sum<sub>i</sub>)</code> ≠ the correct contribution — so you would need
+    an AllReduce to assemble the full intermediate <em>before</em> applying the activation.
+    That forces two reductions per block instead of one:
+  </p>
+
+<div class="diagram">Why column-parallel comes BEFORE row-parallel
+FFN block:  Z = GeLU(X · A) · B
+
+  Split the first matrix A by COLUMNS, the second matrix B by ROWS:
+      A = [ A1 │ A2 ]              B = [ B1 ]
+                                       [ B2 ]
+
+           [GPU 0]          [GPU 1]
+            X·A1             X·A2        ← column-parallel: no communication
+            GeLU             GeLU        ← element-wise activation, so each GPU
+                                           handles its own shard alone
+            ·B1              ·B2         ← row-parallel: each GPU holds a partial
+             └───────┬────────┘
+               AllReduce (sum)          ← the ONE sync, at the very end
+                     ↓
+                     Z   →   next block</div>
 
   <p>
     In this simplified dense decoder block, each transformer layer contains one
@@ -410,7 +467,7 @@ TP=8 capacity: (8 × 62.5 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 745
 
   <div class="callout blue">
     <p>
-      <strong>The key insight:</strong> TP is a latency lever, not a free speedup. It divides
+      <strong>The point:</strong> TP is a latency lever, not a free speedup. It divides
       matrix multiplication across GPUs but adds communication to every layer. The useful rule is:
       choose the smallest TP degree that fits the model and satisfies the latency SLO. Beyond that
       point, extra ranks may add more collective overhead than useful compute.
@@ -476,20 +533,56 @@ TP=8 capacity: (8 × 62.5 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 745
   <h3>The Theoretical Fix: Micro-Batching</h3>
 
   <p>
-    The standard theoretical technique for reducing bubble overhead is to divide independent work
-    into M <em>micro-batches</em>. In an ideal overlapping implementation, while
-    micro-batch 0 is at GPU 1, GPU 0 would immediately start processing micro-batch 1.
-    Assuming balanced stages and no additional scheduler stalls, utilization across N stages is:
+    M is the number of micro-batches the global batch is divided into. A micro-batch is one
+    contiguous slice: with a global batch of 256 sequences and M=4, each micro-batch holds
+    64 sequences. The scheduling rule is that each stage, as soon as it finishes a micro-batch
+    and forwards its activations downstream, immediately starts the next one rather than waiting
+    for the full batch to drain.
   </p>
 
-<div class="diagram">Ideal pipeline with micro-batching (PP=4, M=4) — theoretical:
+  <p>This creates a three-phase schedule:</p>
+  <ul>
+    <li><strong>Startup (N−1 steps):</strong> Stage 0 begins immediately on micro-batch ①.
+      Stage 1 can only start once it receives Stage 0's activations — one step later.
+      Stage 2 must wait one more step, and so on. The pipeline fills one stage per step
+      for N−1 steps.</li>
+    <li><strong>Steady state (M−N+1 steps, when M≥N):</strong> all N stages are simultaneously
+      busy with different micro-batches. This is the only phase where every GPU contributes.</li>
+    <li><strong>Drain (N−1 steps):</strong> Stage 0 finishes its last micro-batch and goes idle.
+      The pipeline empties front to back, mirroring the startup exactly.</li>
+  </ul>
 
-  Time →
-  [GPU 0]  ①②③④░░░░░░░░  ← starts filling immediately
-  [GPU 1]  ░░①②③④░░░░░░
-  [GPU 2]  ░░░░①②③④░░░░
-  [GPU 3]  ░░░░░░①②③④░░  ← output for ①, then ②, ...
-           steady state: all 4 GPUs busy at once (theoretical)</div>
+  <p>
+    The combined bubble — idle slot-steps from startup and drain — is N(N−1), independent of M.
+    Adding micro-batches extends only the steady-state middle without touching the startup or
+    drain. When M ≈ N the steady-state window is nearly absent and the bubble dominates;
+    M must significantly exceed N to amortize the fixed overhead.
+  </p>
+
+<div class="diagram">Three-phase pipeline schedule (PP=4)
+
+  M=4 (startup=3, steady=1, drain=3), total steps = 7:
+
+  [Stage 0]   ①②③  ④  ░░░
+  [Stage 1]   ░①②  ③  ④░░
+  [Stage 2]   ░░①  ②  ③④░
+  [Stage 3]   ░░░  ①  ②③④
+
+  Bubble = N(N−1) = 12 idle slot-steps (fixed; does not grow with M).
+  Useful = M×N = 16.  Total = 28.  Utilization = 16/28 = 4/7 ≈ 57%.
+  With M=N the steady state collapses to one step; startup and drain dominate.
+
+  ─────────────────────────────────────────────────────────────────────
+  M=10 (startup=3, steady=7, drain=3), total steps = 13:
+
+  [Stage 0]   ①②③  ④⑤⑥⑦⑧⑨⑩  ░░░
+  [Stage 1]   ░①②  ③④⑤⑥⑦⑧⑨  ⑩░░
+  [Stage 2]   ░░①  ②③④⑤⑥⑦⑧  ⑨⑩░
+  [Stage 3]   ░░░  ①②③④⑤⑥⑦  ⑧⑨⑩
+
+  Same bubble = N(N−1) = 12.  Useful = M×N = 40.  Total = 52.
+  Utilization = 40/52 = 10/13 ≈ 77%.
+  More micro-batches dilute the same fixed bubble over more useful work.</div>
 
   <pre>Theoretical utilization ≈ M / (M + N − 1)
 
@@ -529,23 +622,34 @@ PP=4, M=27:  27 / (27 + 3) = 90%</pre>
   <h3>A Common Hybrid When One Replica Must Span Nodes</h3>
 
   <p>
-    When one replica is too large for a single node, a common pattern combines both strategies:
-    use TP within each node (where NVLink makes AllReduces cheap) and PP across nodes
-    (where the slower fabric carries only stage-boundary activations).
+    When a model must span multiple nodes, there are three candidate topologies for two
+    8&times; A100 SXM4 nodes:
   </p>
 
-  <p>
-    For a replica that must occupy 2 nodes of 8× A100 SXM4:
-  </p>
+  <ul>
+    <li><strong>TP=16 across all 16 GPUs:</strong> every layer is split 16 ways, which fits
+      in memory. But all 160 AllReduces per forward pass must cross InfiniBand. The
+      highest-frequency communication in the cluster lands on the slowest link.</li>
+    <li><strong>PP=2 with one GPU per stage:</strong> one GPU per node holds its layer range;
+      the remaining 14 GPUs sit idle. Memory fits; hardware utilization does not.</li>
+    <li><strong>Hybrid — TP=8 within each node, PP=2 across nodes:</strong> all 160
+      AllReduces per forward pass stay inside each node's NVLink fabric. Only a single
+      stage-boundary activation tensor crosses InfiniBand per forward pass. High-frequency
+      traffic on the fast link; one low-frequency transfer on the slow one.</li>
+  </ul>
 
-  <pre>tensor_parallel_size=8    # all 8 GPUs on each node share each layer
-pipeline_parallel_size=2  # Node A runs layers 0–39, Node B runs 40–79</pre>
+  <pre>tensor_parallel_size=8    # AllReduces stay within each node's NVLink fabric
+pipeline_parallel_size=2  # one activation tensor crosses InfiniBand per forward pass
+                          # Node A: layers 0–39,  Node B: layers 40–79</pre>
 
   <p>
-    Each node handles its layer range using TP=8 (NVLink for the AllReduces),
-    and the two nodes communicate once per forward pass at the layer boundary
-    (InfiniBand for the activation transfer). For a 70B model that already fits on one of these
-    nodes, this is a topology to compare against replicas, not a default recommendation.
+    The hybrid wins by matching communication frequency to link speed, not because TP or PP
+    alone cannot shard the model. For Llama-3-70B — 140&nbsp;GB, which fits on one node at
+    TP=8 (17.5&nbsp;GB per GPU against an 80&nbsp;GB limit) — the hybrid is unnecessary. It
+    becomes a genuine requirement when a model is large enough that TP=8 per node still cannot
+    fit each stage's weights (roughly 1&nbsp;T+ parameters in FP16). For 70B, independent
+    per-node replicas are the right starting point; the hybrid is a candidate to benchmark
+    against them.
   </p>
 
   <!-- ═══════════════════════════════════════════════════════════════ -->
@@ -562,6 +666,14 @@ pipeline_parallel_size=2  # Node A runs layers 0–39, Node B runs 40–79</pre>
     or PP. Requests are routed across replicas, and dense-model replicas process independent batches
     without synchronizing every transformer layer. DP therefore increases aggregate request capacity,
     but it does not make one request's forward pass faster.
+  </p>
+
+  <p>
+    When the model fits on one node, DP and TP face the same topology tradeoff across nodes.
+    Extending to TP=16 (spanning two 8-GPU nodes) keeps a single replica but puts all 160
+    AllReduces per forward pass on InfiniBand. DP=2 with TP=8 per node keeps every AllReduce
+    inside each node's NVLink fabric, with zero cross-node communication during forward passes.
+    DP buys both the right communication topology and twice the request capacity.
   </p>
 
 <div class="diagram">Two nodes, one TP=8 replica per node (DP=2, TP=8):
@@ -960,15 +1072,15 @@ max_num_seqs = 256  # per replica; tune to the request-length distribution</pre>
   <h2>Further Reading</h2>
 
   <ul>
-    <li><a href="https://horace.io/brrr_intro.html">Making Deep Learning Go Brrr From First Principles</a> — Horace He. The inspiration for this article's first-principles approach and factory analogy.</li>
-    <li><a href="https://docs.vllm.ai/en/latest/serving/parallelism_scaling/">vLLM Parallelism and Scaling documentation</a> — official docs on TP, PP, and multi-node configuration.</li>
-    <li><a href="https://docs.vllm.ai/en/latest/serving/data_parallel_deployment/">vLLM Data Parallel Deployment documentation</a> — official docs on combining independent DP replicas with TP groups.</li>
-    <li><a href="https://docs.vllm.ai/en/latest/features/quantization/">vLLM Quantization documentation</a> — current format and hardware compatibility matrix.</li>
-    <li><a href="https://arxiv.org/abs/1909.08053">Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism</a> — Shoeybi et al. The tensor-parallel matrix partitioning used by modern inference runtimes.</li>
-    <li><a href="https://arxiv.org/abs/1811.06965">GPipe: Efficient Training of Giant Neural Networks using Pipeline Parallelism</a> — Huang et al. Source of the idealized pipeline bubble model.</li>
-    <li><a href="https://arxiv.org/abs/2309.06180">Efficient Memory Management for Large Language Model Serving with PagedAttention</a> — Kwon et al., SOSP 2023. The original vLLM paper.</li>
-    <li><a href="https://docs.vllm.ai/en/latest/benchmarking/cli/">vLLM Benchmark CLI documentation</a> — official tooling for repeatable latency and throughput comparisons.</li>
-    <li><a href="https://www.nvidia.com/en-us/data-center/a100/">NVIDIA A100 product page</a> and <a href="https://www.nvidia.com/en-us/data-center/h100/">NVIDIA H100 product page</a> — vendor specifications for HBM and NVLink bandwidth.</li>
+    <li><a href="https://horace.io/brrr_intro.html">Making Deep Learning Go Brrr From First Principles</a>. Horace He. The inspiration for this article's first-principles approach and factory analogy.</li>
+    <li><a href="https://docs.vllm.ai/en/latest/serving/parallelism_scaling/">vLLM Parallelism and Scaling documentation</a>. Official docs on TP, PP, and multi-node configuration.</li>
+    <li><a href="https://docs.vllm.ai/en/latest/serving/data_parallel_deployment/">vLLM Data Parallel Deployment documentation</a>. Official docs on combining independent DP replicas with TP groups.</li>
+    <li><a href="https://docs.vllm.ai/en/latest/features/quantization/">vLLM Quantization documentation</a>. Current format and hardware compatibility matrix.</li>
+    <li><a href="https://arxiv.org/abs/1909.08053">Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism</a>. Shoeybi et al. The tensor-parallel matrix partitioning used by modern inference runtimes.</li>
+    <li><a href="https://arxiv.org/abs/1811.06965">GPipe: Efficient Training of Giant Neural Networks using Pipeline Parallelism</a>. Huang et al. Source of the idealized pipeline bubble model.</li>
+    <li><a href="https://arxiv.org/abs/2309.06180">Efficient Memory Management for Large Language Model Serving with PagedAttention</a>. Kwon et al., SOSP 2023. The original vLLM paper.</li>
+    <li><a href="https://docs.vllm.ai/en/latest/benchmarking/cli/">vLLM Benchmark CLI documentation</a>. Official tooling for repeatable latency and throughput comparisons.</li>
+    <li><a href="https://www.nvidia.com/en-us/data-center/a100/">NVIDIA A100 product page</a> and <a href="https://www.nvidia.com/en-us/data-center/h100/">NVIDIA H100 product page</a>. Vendor specifications for HBM and NVLink bandwidth.</li>
   </ul>
 
   <div class="footer">

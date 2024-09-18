@@ -438,7 +438,7 @@ New logits from this verification pass (draft suffix):
   <h3>Step 3: Accept or Reject, Left to Right</h3>
 
   <p>
-    For each draft token, compute the acceptance probability:
+    For each draft token x̃ (notation for a proposed/draft token), compute the acceptance probability:
   </p>
 
   <pre>acceptance_prob = min(1, p_target(x̃) / p_draft(x̃))</pre>
@@ -449,6 +449,82 @@ New logits from this verification pass (draft suffix):
   </p>
 
   <pre>p_adjusted(x) = max(0, p_target(x) − p_draft(x))  (then normalize)</pre>
+
+  <p>
+    To see why this specific distribution is required, work backwards from the goal: the combined
+    process must produce token x with exactly p_target(x) probability at every position. Token x
+    can land in the output in one of two ways — it gets accepted, or the round is rejected and x
+    is the corrected sample. Those two contributions must add up to p_target(x).
+  </p>
+
+  <p><strong>What acceptance already contributes.</strong> The drafter proposes x with probability
+    p_draft(x). That proposal is accepted with probability min(1,&nbsp;p_target(x)&nbsp;/&nbsp;p_draft(x)).
+    Multiplying through:</p>
+
+  <pre>P(x accepted) = p_draft(x) × min(1, p_target(x) / p_draft(x))
+              = min(p_draft(x), p_target(x))</pre>
+
+  <p>
+    This is the mass acceptance has already delivered for token x. Whatever the corrected-sample
+    branch contributes on top must bring the total to p_target(x), so:
+  </p>
+
+  <pre>P(rejection) × P(corrected = x | rejection) = p_target(x) − min(p_draft(x), p_target(x))
+                                             = max(0, p_target(x) − p_draft(x))</pre>
+
+  <p><strong>What P(rejection) equals.</strong> A rejection occurs when the round does not end in
+    acceptance. The total mass that acceptance passes through, summed across all possible tokens, is
+    Σ_x&nbsp;min(p_draft(x),&nbsp;p_target(x)), so:</p>
+
+  <pre>P(rejection) = 1 − Σ_x min(p_draft(x), p_target(x))</pre>
+
+  <p>
+    Now sum the per-token deficits across all x:
+  </p>
+
+  <pre>Σ_x max(0, p_target(x) − p_draft(x))
+  = Σ_x p_target(x) − Σ_x min(p_draft(x), p_target(x))
+  = 1 − Σ_x min(p_draft(x), p_target(x))
+  = P(rejection)</pre>
+
+  <p>
+    The total deficit across all tokens equals P(rejection) exactly. Dividing each token's deficit
+    by P(rejection) gives a valid distribution summing to 1. Sampling from it on rejection delivers
+    exactly the missing mass for each token, and the combined probability lands on p_target(x).
+  </p>
+
+  <p><strong>Why sampling from p_target directly fails.</strong> Consider a vocabulary of three
+    tokens with these distributions:</p>
+
+<div class="diagram">          p_target   p_draft   min(·,·)   deficit = max(0, p_t − p_d)
+token A:    0.60       0.20      0.20        0.40
+token B:    0.30       0.50      0.30        0.00
+token C:    0.10       0.30      0.10        0.00
+           ─────      ─────     ─────       ─────
+totals:     1.00       1.00      0.60        0.40  ← = P(rejection)
+
+Acceptance passes through 0.60 of total mass; P(rejection) = 0.40.
+
+Adjusted distribution (normalize deficit by 0.40):
+  token A: 0.40 / 0.40 = 1.0   token B: 0   token C: 0
+
+Combined probability using the adjusted distribution:
+  token A: 0.20 (accepted) + 0.40 × 1.00 (corrected) = 0.60  ✓ = p_target
+  token B: 0.30            + 0.40 × 0.00              = 0.30  ✓
+  token C: 0.10            + 0.40 × 0.00              = 0.10  ✓
+
+Combined probability if we sampled p_target on rejection instead:
+  token A: 0.20 + 0.40 × 0.60 = 0.44  ✗  (target is 0.60)
+  token B: 0.30 + 0.40 × 0.30 = 0.42  ✗  (target is 0.30)
+  token C: 0.10 + 0.40 × 0.10 = 0.14  ✗  (target is 0.10)</div>
+
+  <p>
+    Using p_target on rejection adds a second dose of p_target(x) mass for every token on top of
+    what acceptance already contributed, pushing all probabilities above their targets. The adjusted
+    distribution avoids this by zeroing out any token whose deficit is already zero — token B and C
+    above had their full target mass delivered by acceptance, so they must receive nothing from the
+    correction step.
+  </p>
 
 <div class="diagram">Token 1: "Paris"
   p_target = 0.88,  p_draft = 0.82
@@ -519,15 +595,14 @@ If drafter cost ≪ target cost: roughly 3 tokens for the price of ~1 target ste
     Notice that the target model's forward pass produced logits at position n+4 the position
     after the last draft token as a byproduct. If all k draft tokens had been accepted, those
     logits would give us a <em>free bonus token</em>: k+1 tokens from one verification step.
-    This bonus is why the expected output per step slightly exceeds k even when α is high.
+    This bonus is why the expected output per step slightly exceeds k even when α (the per-token acceptance rate) is high.
   </p>
 
   <!-- ═══════════════════════════════════════════════════════════════ -->
   <h2 id="math">The Math: Expected Speedup</h2>
 
   <p>
-    Let α be the per-token acceptance rate (the probability that a single draft token is accepted,
-    averaged across positions). Assuming independence across positions, the expected number of
+    Let α be the per-token acceptance rate, averaged across positions. Assuming independence across positions, the expected number of
     tokens produced per verification step is:
   </p>
 

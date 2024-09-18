@@ -251,8 +251,9 @@
   <p class="subtitle">Why LLM generation is slow, what mathematical asymmetry makes a faster approach possible, and how four different techniques exploit it without changing the output at all.</p>
 
   <p>
-    When you type a question into an LLM, the response appears word by word. Not all at once —
-    one token, then another, then another. Even when the answer is completely predictable, the
+    When you type a question into an LLM (large language model the technology behind ChatGPT,
+    Claude, and Gemini), the response appears word by word. Not all at once one token (roughly
+    one word or word-fragment) at a time. Even when the answer is completely predictable, the
     model still produces each piece in sequence, one step at a time.
   </p>
 
@@ -282,22 +283,24 @@
   <h2 id="bottleneck">Why Generating One Token Uses 140&nbsp;GB of Memory</h2>
 
   <p>
-    To generate token number 10, the model needs tokens 1 through 9 to already exist. Token 10's
-    attention values depend on the key and value vectors of every preceding token and those only
-    exist after those tokens are generated. You cannot skip ahead. Every new token depends on all
-    the tokens before it.
+    To generate token number 10, the model needs tokens 1 through 9 to already exist. Before
+    producing each new token, the model builds a rich summary of the entire context so far —
+    and that summary can only be built once the preceding tokens exist. You cannot skip ahead.
+    Every new token depends on all the tokens before it.
   </p>
 
   <p>
-    So the model generates one token per forward pass, then feeds that token back in as input,
-    then runs another forward pass. k tokens require k passes, in sequence.
+    So the model runs its full computation once this single run is called a <strong>forward
+    pass</strong> to produce one token, then feeds that token back as input and runs again.
+    k tokens require k forward passes, in sequence.
   </p>
 
   <p>
     Here is what each of those passes actually costs. When the model runs a single forward pass
-    to generate one token, it loads all of its parameters from GPU memory. For Llama-3-70B in
-    16-bit precision, that is 140&nbsp;GB of data flowing from high-bandwidth memory to the
-    compute units. The GPU's matrix-multiply units then perform a small amount of math with
+    to generate one token, it loads all of its parameters from GPU memory. For Llama-3-70B stored
+    in 16-bit precision (each number using 2 bytes instead of 4, halving memory use), that is
+    140&nbsp;GB of data flowing from the GPU's fast on-chip memory chips (high-bandwidth memory,
+    or HBM) to the compute units. The GPU's matrix-multiply units then perform a small amount of math with
     those weights and produce one token. Then the whole 140&nbsp;GB must stream again for the
     next token.
   </p>
@@ -311,10 +314,11 @@
   </p>
 
   <p>
-    The GPU's compute units are in the same situation. The arithmetic intensity of a
-    single-token decode at batch size 1 is roughly 1–2&nbsp;FLOPs/byte. The A100's peak
-    efficiency requires about 156&nbsp;FLOPs/byte. The compute units run at less than 2% of
-    their potential capacity. The bottleneck is the memory bus, not the math hardware.
+    The GPU's compute units are in the same situation. The arithmetic intensity the ratio of
+    math operations performed to bytes of weight data transferred of a single-token decode is
+    roughly 1–2 FLOPs (floating-point operations) per byte. An A100 GPU needs about 156 FLOPs
+    per byte to keep its compute units busy. The compute units run at less than 2% of their
+    potential capacity. The bottleneck is the memory bus, not the math hardware.
   </p>
 
   <div class="callout red">
@@ -344,14 +348,14 @@
 
   <p>
     <strong>Generating</strong> k tokens takes k forward passes. You cannot parallelise across
-    them each output token is the input to the next step.
+    them. Each output token is the input to the next step.
   </p>
 
   <p>
     <strong>Checking</strong> whether a proposed sequence of k tokens is correct takes only one
     forward pass. The transformer's attention mechanism already processes all input positions
     simultaneously. When you run a forward pass on a sequence of n tokens, you get the model's
-    output distribution at every position at once this is exactly how prompt processing
+    output distribution at every position at once; this is exactly how prompt processing
     (prefill) works. A 100-token prompt is processed in one pass, not 100. The same mechanism
     means you can check k proposed tokens simultaneously: feed the model the existing context
     followed by the k candidates, run one forward pass, and read off the model's probability
@@ -368,8 +372,8 @@
   <p>
     This is <strong>speculative decoding</strong>. The cheap guesser is called the
     <strong>drafter</strong>. The large model doing verification is called the <strong>target
-    model</strong>. The proposed tokens are <strong>draft tokens</strong> guesses the target
-    model will either accept or correct.
+    model</strong>. The proposed tokens are called <strong>draft tokens</strong>. They are
+    guesses the target model will either accept or correct.
   </p>
 
   <div class="callout">
@@ -458,21 +462,54 @@ Draft sequence: ["Paris", ",", "known", "for"]</div>
   <p>
     The formula accounts for this. If p_target(x̃)&nbsp;≥&nbsp;p_draft(x̃) the target assigns
     at least as much probability to the draft token as the drafter did always accept. If the
-    target assigns less, accept proportionally less often. The combined output distribution ends
-    up identical to what you'd get by running the target model alone. This is lossless.
+    target assigns less, accept proportionally less often. Every token in the output ends up
+    with exactly the probability the target model would have assigned it had it generated
+    everything alone. This property is called <strong>lossless</strong>: the drafter speeds
+    things up without changing what gets produced.
   </p>
 
   <p>
-    <strong>On rejection, why not just sample from p_target?</strong> When a token is rejected,
-    you need a corrected replacement. Sampling directly from p_target seems like the obvious
-    choice but it's wrong, and the reason reveals something important about the algorithm.
+    <strong>On rejection, why not just sample from p_target?</strong> Let's look at what goes
+    wrong with a concrete three-token example before working out the algebra.
+  </p>
+
+<div class="diagram">Three-token vocabulary:
+
+          p_target   p_draft   min(·,·)   deficit = max(0, p_t − p_d)
+token A:    0.60       0.20      0.20        0.40
+token B:    0.30       0.50      0.30        0.00
+token C:    0.10       0.30      0.10        0.00
+           ─────      ─────     ─────       ─────
+totals:     1.00       1.00      0.60        0.40
+
+Acceptance passes through 0.60 of total mass. P(rejection) = 0.40.
+
+If we sample from p_target on rejection:
+  token A: 0.20 (accepted) + 0.40 × 0.60 (corrected) = 0.44  ✗  (target is 0.60)
+  token B: 0.30            + 0.40 × 0.30              = 0.42  ✗  (target is 0.30)
+  token C: 0.10            + 0.40 × 0.10              = 0.14  ✗  (target is 0.10)
+
+If we sample from the deficit (normalized) on rejection:
+  Adjusted distribution: token A = 0.40/0.40 = 1.0    token B = 0    token C = 0
+  token A: 0.20 (accepted) + 0.40 × 1.00 (corrected) = 0.60  ✓
+  token B: 0.30            + 0.40 × 0.00              = 0.30  ✓
+  token C: 0.10            + 0.40 × 0.00              = 0.10  ✓</div>
+
+  <p>
+    Sampling from p_target gets the probability wrong for every token but in opposite
+    directions depending on the drafter's behaviour. Tokens B and C are <em>overcounted</em>:
+    the drafter was more confident about them than the target (p_draft&nbsp;&gt;&nbsp;p_target),
+    so acceptance already delivered their full target mass; any correction on top pushes them
+    above it. Token A is <em>undercounted</em>: the drafter underestimated it, acceptance only
+    contributed 0.20 of the 0.60 needed, and the p_target correction adds only 0.24 more —
+    not the 0.40 required. The deficit is the only correction that is exactly right for each
+    token. Here is why.
   </p>
 
   <p>
-    Work backwards from the goal: the combined process (accept some tokens, correct on rejection)
-    must produce token x with exactly p_target(x) probability at every position. Token x can end
-    up in the output in exactly two ways: it gets accepted, or the round rejects and x is the
-    corrected sample. Those two contributions must add up to p_target(x).
+    The goal is for token x to appear in the output with exactly p_target(x) probability. It
+    can get there in one of two ways: it is accepted, or the round rejects and x is the corrected
+    sample. Those two contributions must add up to p_target(x).
   </p>
 
   <p>
@@ -485,70 +522,35 @@ Draft sequence: ["Paris", ",", "known", "for"]</div>
               = min(p_draft(x), p_target(x))</pre>
 
   <p>
-    That is the probability mass acceptance has already delivered for token x. Whatever the
-    corrected-sample branch contributes must bring the total to p_target(x), so:
+    That is the mass acceptance already delivered. The corrected sample must contribute only the
+    remainder:
   </p>
 
   <pre>P(rejection) × P(corrected = x | rejection) = p_target(x) − min(p_draft(x), p_target(x))
                                              = max(0, p_target(x) − p_draft(x))</pre>
 
   <p>
-    <strong>What P(rejection) equals.</strong> The total mass that acceptance delivers, summed
-    across all possible tokens, is Σ_x&nbsp;min(p_draft(x),&nbsp;p_target(x)), so:
+    <strong>Why this normalises cleanly.</strong> Sum the per-token deficits across all tokens:
   </p>
 
-  <pre>P(rejection) = 1 − Σ_x min(p_draft(x), p_target(x))</pre>
-
-  <p>Now sum the per-token deficits across all x:</p>
-
   <pre>Σ_x max(0, p_target(x) − p_draft(x))
-  = Σ_x p_target(x) − Σ_x min(p_draft(x), p_target(x))
   = 1 − Σ_x min(p_draft(x), p_target(x))
   = P(rejection)</pre>
 
   <p>
-    The total deficit across all tokens equals P(rejection) exactly. Dividing each token's
-    deficit by P(rejection) gives a valid distribution summing to 1. Drawing from it on
-    rejection delivers precisely the missing mass for each token, and the combined total lands
-    on p_target(x). This is the <strong>adjusted distribution</strong>:
+    The total deficit equals P(rejection) exactly, so dividing each token's deficit by
+    P(rejection) gives a valid distribution that sums to 1. This is the
+    <strong>adjusted distribution</strong>:
   </p>
 
   <pre>p_adjusted(x) = max(0, p_target(x) − p_draft(x))  (then normalize)</pre>
 
   <p>
-    If you sampled from p_target on rejection instead, you'd add a second dose of p_target(x)
-    mass on top of what acceptance already contributed, pushing every token's combined probability
-    above its target. A concrete example shows the difference:
-  </p>
-
-<div class="diagram">Three-token vocabulary:
-
-          p_target   p_draft   min(·,·)   deficit = max(0, p_t − p_d)
-token A:    0.60       0.20      0.20        0.40
-token B:    0.30       0.50      0.30        0.00
-token C:    0.10       0.30      0.10        0.00
-           ─────      ─────     ─────       ─────
-totals:     1.00       1.00      0.60        0.40  ← = P(rejection)
-
-Acceptance passes through 0.60 of total mass. P(rejection) = 0.40.
-
-Adjusted distribution (normalize deficit by 0.40):
-  token A: 0.40 / 0.40 = 1.0    token B: 0    token C: 0
-
-Using the adjusted distribution combined probabilities:
-  token A: 0.20 (accepted) + 0.40 × 1.00 (corrected) = 0.60  ✓ = p_target
-  token B: 0.30            + 0.40 × 0.00              = 0.30  ✓
-  token C: 0.10            + 0.40 × 0.00              = 0.10  ✓
-
-Using p_target directly on rejection combined probabilities:
-  token A: 0.20 + 0.40 × 0.60 = 0.44  ✗  (target is 0.60)
-  token B: 0.30 + 0.40 × 0.30 = 0.42  ✗  (target is 0.30)
-  token C: 0.10 + 0.40 × 0.10 = 0.14  ✗  (target is 0.10)</div>
-
-  <p>
-    Token B and token C had their full target mass delivered by acceptance alone. They receive
-    zero weight in the corrected distribution any additional probability would push them
-    above their targets.
+    Back to the example: token B had p_draft(B)&nbsp;=&nbsp;0.50, already exceeding
+    p_target(B)&nbsp;=&nbsp;0.30. Acceptance delivers min(0.50,&nbsp;0.30)&nbsp;=&nbsp;0.30 for
+    token B its full target mass. The deficit is zero; the correction step must give it nothing.
+    Token A, by contrast, has a deficit of 0.40, which is precisely what remains after acceptance
+    contributes its 0.20.
   </p>
 
   <p>Applying this to the France example:</p>
@@ -763,7 +765,8 @@ Five tokens out. Drafter cost: zero.</div>
 
   <p>
     The original speculative decoding papers used a small language model as the drafter. The
-    small model proposes k tokens autoregressively; the large model verifies them in one pass.
+    small model proposes k tokens one at a time, each step feeding its output back as input to
+    the next (autoregressive generation); the large model then verifies all k in one pass.
   </p>
 
   <p>
@@ -820,34 +823,37 @@ If α = 0.80 with k = 4:
   <p>
     EAGLE (<a href="https://arxiv.org/abs/2401.15077">Li et al. 2024</a>) takes a different
     approach. Instead of training a separate model from scratch, it trains a single additional
-    transformer block the EAGLE block that operates directly in the target model's own
-    internal representation space.
+    transformer block the EAGLE block that operates directly inside the target model's own
+    internal numbers, the high-dimensional vectors the model uses to represent meaning
+    (its feature space).
   </p>
 
   <h3>Why the Target Model's Feature Space Matters</h3>
 
   <p>
-    When the target model processes a sequence, it produces a hidden state at every layer. The
-    hidden state just before the final LM head call it f_t is exactly the representation
-    the LM head transforms into next-token probabilities. If a drafter could predict future
-    values of f_t, it would effectively be predicting what the large model is about to think.
-    That is a much easier problem than predicting tokens from scratch.
+    When the target model processes a sequence, it produces a numerical summary of what it has
+    read so far (a hidden state) at every layer. The hidden state just before the final output
+    layer call it f_t is exactly what that output layer (the LM head, short for language
+    model head) transforms into a probability score for every possible next token. If a drafter
+    could predict future values of f_t, it would effectively be predicting what the large model
+    is about to think. That is a much easier problem than predicting tokens from scratch.
   </p>
 
   <p>
-    There is one subtlety. The feature at position t+1 depends not just on the features at
-    position t, but on which specific token was sampled at t. Two different sampled tokens
-    produce two different feature trajectories. EAGLE resolves this by concatenating the token
-    embedding e(x_{t+1}) with the feature vector f_t. The token tells the EAGLE block which
-    branch of the feature space to follow.
+    There is one subtlety. The hidden state at position t+1 depends not just on the hidden
+    state at t, but on which specific token was sampled at t. Two different sampled tokens
+    produce two different trajectories through the model's internal numbers. EAGLE resolves
+    this by combining the learned numeric representation of the sampled token (its embedding,
+    written e(x_{t+1})) with the hidden state f_t. The embedding tells the EAGLE block which
+    branch of the model's internal space to follow.
   </p>
 
   <h3>EAGLE-1</h3>
 
   <p>
     EAGLE trains a single transformer block that takes (f_t, e(x_{t+1})) as input and
-    outputs an approximate feature vector f̂_{t+1}. That approximation goes through the shared
-    LM head to produce the draft distribution for x_{t+2}. Each EAGLE step costs roughly 1/L
+    outputs an approximate hidden state f̂_{t+1}. That approximation goes through the shared
+    LM head (output layer) to produce the draft probability scores for x_{t+2}. Each EAGLE step costs roughly 1/L
     of a full model forward pass for a 70-layer model, about 1/70th the cost of one
     target-model step, far cheaper than running an 8B draft model.
   </p>
@@ -878,10 +884,10 @@ EAGLE draft step (starting from the last accepted position m):
   <div class="callout blue">
     <p>
       <strong>Where f_m comes from:</strong> during each verification pass, the target model
-      produces second-to-top-layer features at every accepted position. These are cached. The
-      EAGLE block always seeds from the target's true f_m at the last accepted position not
-      from its own approximation. The approximation error accumulates only within a single draft
-      window, then gets reset.
+      produces the hidden state at the layer just before the output layer (the second-to-top-layer
+      features, f_m) at every accepted position. These are cached. The EAGLE block always seeds
+      from the target's true f_m at the last accepted position not from its own approximation.
+      The approximation error accumulates only within a single draft window, then gets reset.
     </p>
   </div>
 
@@ -890,8 +896,9 @@ EAGLE draft step (starting from the last accepted position m):
   <p>
     EAGLE-1 builds a <em>tree</em> of draft candidates rather than a single chain at each
     depth it expands the top-k most likely tokens, and the target model verifies all branches
-    simultaneously using a tree attention mask. The longest accepted root-to-leaf path becomes
-    the output. But EAGLE-1's tree has a fixed shape: the same branching factors at every
+    simultaneously using a special pattern that ensures each branch only attends to its own
+    ancestors, never to sibling branches (a tree attention mask). The longest accepted
+    root-to-leaf path becomes the output. But EAGLE-1's tree has a fixed shape: the same branching factors at every
     depth, regardless of how hard the current generation is.
   </p>
 
@@ -938,8 +945,9 @@ EAGLE-2 (dynamic tree: shape responds to confidence):
   <h3>The Training Setup</h3>
 
   <p>
-    After the main transformer trunk produces its hidden state h_t at each position t,
-    DeepSeek-V3 adds D lightweight "MTP modules" each one a single transformer layer.
+    After the main transformer trunk produces its numerical summary of the context (hidden
+    state h_t) at each position t, DeepSeek-V3 adds D lightweight "MTP modules" each one
+    a single transformer layer.
     MTP Module 1 takes (h_t,&nbsp;embed(x_{t+1})) and predicts x_{t+2}. Module 2 takes
     the output of Module 1 and predicts x_{t+3}. Each module shares the same final LM head
     with the trunk. During training, all future tokens are known, so every MTP module receives
@@ -994,7 +1002,8 @@ Step 3 MTP modules re-run on newly accepted tokens to draft the next round.</div
 
   <p>
     The MTP modules were trained jointly with the trunk they consume, so there is no mismatch
-    between the hidden states they receive at inference and those they trained on. This is the
+    between the hidden states (numerical context summaries) they receive at inference and those
+    they trained on. This is the
     key advantage over EAGLE, which trains its block after the target model is fixed. There is
     also no separate model checkpoint, no separate KV cache, and no separate drafting call —
     the modules run as a lightweight tail of the existing forward pass.

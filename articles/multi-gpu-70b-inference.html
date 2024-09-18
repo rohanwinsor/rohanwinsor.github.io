@@ -355,7 +355,7 @@ TP=8 capacity: (8 × 62.5 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 745
     The results remain partitioned for the following row-parallel layer, so this projection
     does not require an immediate reduction.
     This independence comes directly from which dimension is split: each output column of the result
-    depends only on the corresponding weight columns — never on another GPU's slice.
+    depends only on the corresponding weight columns never on another GPU's slice.
     GPU 0 evaluates <code>x @ W[:,0:d/4]</code>, GPU 1 evaluates <code>x @ W[:,d/4:d/2]</code>,
     and so on; these are fully disjoint column ranges of the same matrix multiply.
   </p>
@@ -380,7 +380,7 @@ TP=8 capacity: (8 × 62.5 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 745
     before the next layer can begin.
     This assignment works because the shard boundaries match: the column-parallel layer split
     the weight along the <em>output</em> dimension (e.g. columns 0:d/4 on GPU 0), and the
-    row-parallel layer splits along the <em>input</em> dimension — the same d/4 slice, now
+    row-parallel layer splits along the <em>input</em> dimension the same d/4 slice, now
     viewed as an input row range. GPU 0's output from the first layer is exactly the input
     rows GPU 0 needs for the second layer, so no intermediate communication is required between
     the two.
@@ -406,11 +406,11 @@ TP=8 capacity: (8 × 62.5 GB) ÷ (320 KiB/token × 2,048 tokens/session) ≈ 745
     no communication until the single AllReduce at the end of the pair.
     The non-linearity is the key constraint: element-wise functions like GeLU or SiLU applied
     to a shard produce the same result as applying them to the full tensor and then taking the
-    shard — so each GPU can run the activation independently. Reversing the order breaks this.
+    shard so each GPU can run the activation independently. Reversing the order breaks this.
     If the up-projection were row-parallel (first layer) and the down-projection column-parallel
     (second layer), each GPU would hold a <em>partial sum</em> after the first layer, not a true
     shard. Because GeLU is non-linear,
-    <code>GeLU(partial_sum<sub>i</sub>)</code> ≠ the correct contribution — so you would need
+    <code>GeLU(partial_sum<sub>i</sub>)</code> ≠ the correct contribution so you would need
     an AllReduce to assemble the full intermediate <em>before</em> applying the activation.
     That forces two reductions per block instead of one:
   </p>
@@ -543,7 +543,7 @@ FFN block:  Z = GeLU(X · A) · B
   <p>This creates a three-phase schedule:</p>
   <ul>
     <li><strong>Startup (N−1 steps):</strong> Stage 0 begins immediately on micro-batch ①.
-      Stage 1 can only start once it receives Stage 0's activations — one step later.
+      Stage 1 can only start once it receives Stage 0's activations one step later.
       Stage 2 must wait one more step, and so on. The pipeline fills one stage per step
       for N−1 steps.</li>
     <li><strong>Steady state (M−N+1 steps, when M≥N):</strong> all N stages are simultaneously
@@ -553,7 +553,7 @@ FFN block:  Z = GeLU(X · A) · B
   </ul>
 
   <p>
-    The combined bubble — idle slot-steps from startup and drain — is N(N−1), independent of M.
+    The combined bubble idle slot-steps from startup and drain is N(N−1), independent of M.
     Adding micro-batches extends only the steady-state middle without touching the startup or
     drain. When M ≈ N the steady-state window is nearly absent and the bubble dominates;
     M must significantly exceed N to amortize the fixed overhead.
@@ -632,7 +632,7 @@ PP=4, M=27:  27 / (27 + 3) = 90%</pre>
       highest-frequency communication in the cluster lands on the slowest link.</li>
     <li><strong>PP=2 with one GPU per stage:</strong> one GPU per node holds its layer range;
       the remaining 14 GPUs sit idle. Memory fits; hardware utilization does not.</li>
-    <li><strong>Hybrid — TP=8 within each node, PP=2 across nodes:</strong> all 160
+    <li><strong>Hybrid TP=8 within each node, PP=2 across nodes:</strong> all 160
       AllReduces per forward pass stay inside each node's NVLink fabric. Only a single
       stage-boundary activation tensor crosses InfiniBand per forward pass. High-frequency
       traffic on the fast link; one low-frequency transfer on the slow one.</li>
@@ -644,8 +644,8 @@ pipeline_parallel_size=2  # one activation tensor crosses InfiniBand per forward
 
   <p>
     The hybrid wins by matching communication frequency to link speed, not because TP or PP
-    alone cannot shard the model. For Llama-3-70B — 140&nbsp;GB, which fits on one node at
-    TP=8 (17.5&nbsp;GB per GPU against an 80&nbsp;GB limit) — the hybrid is unnecessary. It
+    alone cannot shard the model. For Llama-3-70B 140&nbsp;GB, which fits on one node at
+    TP=8 (17.5&nbsp;GB per GPU against an 80&nbsp;GB limit) the hybrid is unnecessary. It
     becomes a genuine requirement when a model is large enough that TP=8 per node still cannot
     fit each stage's weights (roughly 1&nbsp;T+ parameters in FP16). For 70B, independent
     per-node replicas are the right starting point; the hybrid is a candidate to benchmark

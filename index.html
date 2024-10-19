@@ -141,6 +141,86 @@
             </tr>
           </tbody></table>
 
+          <!-- Interactive Visualizers -->
+          <heading>Interactive Visualizers</heading>
+          <p class="learning-note">
+            A small Triton memory-layout visualizer for building intuition around PyTorch-style strides.
+            Enter the row and column strides, then watch each logical tensor element map to a linear memory address.
+          </p>
+
+          <section class="stride-visualizer" id="stride-visualizer" aria-labelledby="stride-visualizer-title">
+            <div class="stride-visualizer-header">
+              <div>
+                <h2 id="stride-visualizer-title">Stride Memory Access</h2>
+                <p>Use the highlighted row to see the exact address vector a Triton <code>tl.load</code> would receive.</p>
+              </div>
+              <div class="stride-presets" aria-label="Stride presets">
+                <button type="button" data-preset="contiguous">Contiguous</button>
+                <button type="button" data-preset="skip-cols">Every other column</button>
+                <button type="button" data-preset="transposed">Transposed view</button>
+              </div>
+            </div>
+
+            <div class="stride-controls" aria-label="Stride controls">
+              <label>
+                Rows
+                <input id="strideRows" type="number" min="1" max="6" value="3">
+              </label>
+              <label>
+                Columns
+                <input id="strideCols" type="number" min="1" max="8" value="4">
+              </label>
+              <label>
+                Stride dim 0
+                <input id="strideDim0" type="number" min="0" max="16" value="4">
+              </label>
+              <label>
+                Stride dim 1
+                <input id="strideDim1" type="number" min="0" max="16" value="1">
+              </label>
+              <label>
+                Highlight row
+                <input id="strideRow" type="number" min="0" max="2" value="0">
+              </label>
+            </div>
+
+            <div class="stride-readout" aria-live="polite">
+              <code id="strideFormula">offset = row * 4 + col * 1</code>
+              <span id="strideStatus">row 0 loads [0, 1, 2, 3]</span>
+            </div>
+
+            <div class="stride-calculation" aria-live="polite">
+              <pre><code>row_ptrs = x_ptr + row_index * stride_x_row + col_offsets * stride_x_col</code></pre>
+              <div class="calculation-steps" id="calculationSteps"></div>
+              <p id="calculationTakeaway">
+                Each lane gets one address. <code>tl.load(row_ptrs)</code> loads from the whole vector.
+              </p>
+            </div>
+
+            <div class="stride-panels">
+              <div class="stride-panel">
+                <div class="stride-panel-heading">
+                  <h3>Logical tensor</h3>
+                  <span id="logicalShapeLabel">shape = (3, 4)</span>
+                </div>
+                <div class="logical-grid" id="logicalGrid" aria-label="Logical tensor address mapping"></div>
+              </div>
+
+              <div class="stride-panel">
+                <div class="stride-panel-heading">
+                  <h3>Underlying memory</h3>
+                  <span id="memoryRangeLabel">addresses 0..11</span>
+                </div>
+                <div class="memory-grid" id="memoryGrid" aria-label="Linear memory addresses"></div>
+                <div class="stride-legend" aria-label="Legend">
+                  <span><i class="legend-used"></i>used</span>
+                  <span><i class="legend-active"></i>highlighted row</span>
+                  <span><i class="legend-alias"></i>shared address</span>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- OSS -->
           <heading>Open Source</heading>
           <table style="width:100%;border:0;border-spacing:0;"><tbody>
@@ -186,6 +266,7 @@
 
     </td></tr>
   </tbody></table>
+  <script src="stride-visualizer.js"></script>
 </body>
 
 </html>

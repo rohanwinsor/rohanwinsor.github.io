@@ -24,6 +24,8 @@
   const memoryRangeLabel = root.querySelector("#memoryRangeLabel");
   const logicalGrid = root.querySelector("#logicalGrid");
   const memoryGrid = root.querySelector("#memoryGrid");
+  const calculationSteps = root.querySelector("#calculationSteps");
+  const calculationTakeaway = root.querySelector("#calculationTakeaway");
   const presetButtons = Array.from(root.querySelectorAll("[data-preset]"));
 
   const clampInt = (value, min, max) => {
@@ -58,7 +60,21 @@
     return cell;
   };
 
-  const describePattern = (addresses, stride1) => {
+  const makeCalculationStep = (col, expression) => {
+    const item = document.createElement("div");
+    item.className = "calculation-step";
+
+    const label = document.createElement("strong");
+    label.textContent = `lane ${col}`;
+
+    const code = document.createElement("code");
+    code.textContent = expression;
+
+    item.append(label, code);
+    return item;
+  };
+
+  const describePatten = (addresses, stride1) => {
     if (addresses.length <= 1) {
       return "single column";
     }
@@ -72,6 +88,22 @@
     }
 
     return "gathered load with gaps";
+  };
+
+  const describeTakeaway = (stride1, hasAliases) => {
+    if (stride1 === 1 && !hasAliases) {
+      return "Column lanes read adjacent addresses, so this row is physically contiguous.";
+    }
+
+    if (stride1 === 0) {
+      return "All column lanes point at the same address. This is a broadcast-like view, not a normal row scan.";
+    }
+
+    if (hasAliases) {
+      return "Some logical elements share one address. Strides describe a view, so different coordinates can alias.";
+    }
+
+    return "Each lane gets one computed address. Triton loads the vector of addresses, even when there are gaps.";
   };
 
   const getActivePreset = (rows, cols, stride0, stride1) =>
@@ -109,9 +141,10 @@
       }
     }
 
-    const selectedAddresses = addressesByCell
-      .filter((cell) => cell.row === selectedRow)
-      .map((cell) => cell.address);
+    const selectedCells = addressesByCell.filter(
+      (cell) => cell.row === selectedRow,
+    );
+    const selectedAddresses = selectedCells.map((cell) => cell.address);
     const selectedAddressSet = new Set(selectedAddresses);
     const activePreset = getActivePreset(rows, cols, stride0, stride1);
     const hasAliases = Array.from(ownersByAddress.values()).some(
@@ -129,10 +162,21 @@
     formula.textContent = `offset = row * ${stride0} + col * ${stride1}`;
     status.textContent =
       `row ${selectedRow} loads [${selectedAddresses.join(", ")}] - ` +
-      describePattern(selectedAddresses, stride1) +
+      describePatten(selectedAddresses, stride1) +
       aliasText;
     logicalShapeLabel.textContent = `shape = (${rows}, ${cols})`;
     memoryRangeLabel.textContent = `addresses 0..${maxAddress}`;
+    calculationTakeaway.textContent = describeTakeaway(stride1, hasAliases);
+
+    calculationSteps.replaceChildren();
+    selectedCells.forEach((cell) => {
+      calculationSteps.append(
+        makeCalculationStep(
+          cell.col,
+          `${selectedRow} * ${stride0} + ${cell.col} * ${stride1} = ${cell.address}`,
+        ),
+      );
+    });
 
     logicalGrid.replaceChildren();
     logicalGrid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;

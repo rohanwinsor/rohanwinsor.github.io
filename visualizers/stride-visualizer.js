@@ -65,7 +65,7 @@
     item.className = "calculation-step";
 
     const label = document.createElement("strong");
-    label.textContent = `lane ${col}`;
+    label.textContent = `column ${col}`;
 
     const code = document.createElement("code");
     code.textContent = expression;
@@ -74,37 +74,9 @@
     return item;
   };
 
-  const describePatten = (addresses, stride1) => {
-    if (addresses.length <= 1) {
-      return "single column";
-    }
-
-    if (stride1 === 0) {
-      return "every column points to the same address";
-    }
-
-    if (stride1 === 1) {
-      return "adjacent memory";
-    }
-
-    return "gathered load with gaps";
-  };
-
-  const describeTakeaway = (stride1, hasAliases) => {
-    if (stride1 === 1 && !hasAliases) {
-      return "Column lanes read adjacent addresses, so this row is physically contiguous.";
-    }
-
-    if (stride1 === 0) {
-      return "All column lanes point at the same address. This is a broadcast-like view, not a normal row scan.";
-    }
-
-    if (hasAliases) {
-      return "Some logical elements share one address. Strides describe a view, so different coordinates can alias.";
-    }
-
-    return "Each lane gets one computed address. Triton loads the vector of addresses, even when there are gaps.";
-  };
+  const describeCalculation = (selectedRow, stride0, stride1) =>
+    `For row ${selectedRow}, each column plugs its own column index into ` +
+    `${selectedRow} * ${stride0} + column * ${stride1}.`;
 
   const getActivePreset = (rows, cols, stride0, stride1) =>
     Object.entries(presets).find(([, preset]) =>
@@ -147,11 +119,6 @@
     const selectedAddresses = selectedCells.map((cell) => cell.address);
     const selectedAddressSet = new Set(selectedAddresses);
     const activePreset = getActivePreset(rows, cols, stride0, stride1);
-    const hasAliases = Array.from(ownersByAddress.values()).some(
-      (owners) => owners.length > 1,
-    );
-    const aliasText = hasAliases ? " shared addresses present" : "";
-
     presetButtons.forEach((button) => {
       button.classList.toggle(
         "is-selected",
@@ -161,12 +128,11 @@
 
     formula.textContent = `offset = row * ${stride0} + col * ${stride1}`;
     status.textContent =
-      `row ${selectedRow} loads [${selectedAddresses.join(", ")}] - ` +
-      describePatten(selectedAddresses, stride1) +
-      aliasText;
+      `row ${selectedRow} offsets [${selectedAddresses.join(", ")}]`;
     logicalShapeLabel.textContent = `shape = (${rows}, ${cols})`;
     memoryRangeLabel.textContent = `addresses 0..${maxAddress}`;
-    calculationTakeaway.textContent = describeTakeaway(stride1, hasAliases);
+    calculationTakeaway.textContent =
+      describeCalculation(selectedRow, stride0, stride1);
 
     calculationSteps.replaceChildren();
     selectedCells.forEach((cell) => {

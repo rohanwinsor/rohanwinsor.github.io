@@ -136,3 +136,219 @@ name {
 span.highlight {
     background-color: #ffffd0;
 }
+
+/* Pitch-black terminal theme */
+:root {
+    --terminal-bg: #000000;
+    --terminal-panel: #020602;
+    --terminal-panel-soft: #061006;
+    --terminal-text: #d7fbd2;
+    --terminal-muted: #7fa789;
+    --terminal-dim: #58715f;
+    --terminal-green: #7cff6b;
+    --terminal-cyan: #74d7ff;
+    --terminal-amber: #f4d35e;
+    --terminal-border: #16351e;
+    --terminal-border-strong: #2b7a3d;
+}
+
+html,
+body {
+    background: var(--terminal-bg) !important;
+    color: var(--terminal-text) !important;
+    color-scheme: dark;
+}
+
+body,
+td,
+th,
+tr,
+p,
+a,
+strong,
+heading,
+papertitle,
+name,
+button,
+input,
+select,
+textarea {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace !important;
+}
+
+body,
+main,
+article,
+section,
+nav,
+header,
+footer,
+table,
+tbody,
+thead,
+tfoot,
+tr,
+td,
+th,
+.wrapper,
+.container,
+.row {
+    background: var(--terminal-bg) !important;
+}
+
+p,
+li,
+td,
+th,
+span,
+div,
+caption,
+figcaption,
+label,
+small,
+strong,
+em {
+    color: var(--terminal-text) !important;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+heading,
+name,
+papertitle {
+    color: var(--terminal-green) !important;
+    letter-spacing: 0 !important;
+}
+
+a,
+a strong,
+a span {
+    color: var(--terminal-cyan) !important;
+    border-color: var(--terminal-dim) !important;
+    text-decoration: none !important;
+}
+
+a:focus,
+a:hover,
+a:focus strong,
+a:hover strong,
+a:focus span,
+a:hover span {
+    color: var(--terminal-green) !important;
+    border-color: var(--terminal-green) !important;
+}
+
+hr,
+heading,
+h2 {
+    border-color: var(--terminal-border) !important;
+}
+
+code,
+pre,
+kbd,
+samp,
+.diagram,
+.toc,
+.summary,
+.summary-box,
+.questions-box,
+.attribution,
+.callout,
+.tag,
+.CodeMirror,
+.well,
+.panel,
+.panel-body,
+.panel-heading,
+.modal-content,
+.popover,
+.thumbnail {
+    background: var(--terminal-panel) !important;
+    border-color: var(--terminal-border) !important;
+    box-shadow: none !important;
+    color: var(--terminal-text) !important;
+}
+
+code,
+pre,
+kbd,
+samp,
+.diagram,
+.CodeMirror {
+    color: var(--terminal-green) !important;
+}
+
+pre,
+.diagram,
+.toc,
+.summary,
+.summary-box,
+.questions-box,
+.attribution,
+.callout,
+.CodeMirror {
+    border: 1px solid var(--terminal-border) !important;
+    border-radius: 0 !important;
+}
+
+.callout,
+.attribution,
+.summary,
+.summary-box,
+.questions-box {
+    border-left-color: var(--terminal-green) !important;
+}
+
+th,
+tr:nth-child(even) td {
+    background: var(--terminal-panel-soft) !important;
+}
+
+td,
+th,
+table {
+    border-color: var(--terminal-border) !important;
+}
+
+button,
+input,
+select,
+textarea {
+    background: var(--terminal-panel) !important;
+    border: 1px solid var(--terminal-border-strong) !important;
+    border-radius: 0 !important;
+    color: var(--terminal-text) !important;
+}
+
+button:hover,
+button:focus,
+input:focus,
+select:focus,
+textarea:focus {
+    outline: 1px solid var(--terminal-green) !important;
+}
+
+.tag,
+.oss-stars,
+.subtitle,
+.byline,
+.source-note,
+.version-note,
+.footer,
+.toc h2,
+.summary h2,
+.summary-box h2,
+.questions-box h2 {
+    color: var(--terminal-muted) !important;
+}
+
+span.highlight,
+mark {
+    background: var(--terminal-panel-soft) !important;
+    color: var(--terminal-amber) !important;
+}

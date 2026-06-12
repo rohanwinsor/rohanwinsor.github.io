@@ -2,43 +2,167 @@
 <html lang="en"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
 
   <title>Rohan Winsor</title>
-  
+
   <meta name="author" content="Rohan Winsor">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  
+
   <link rel="stylesheet" type="text/css" href="stylesheet.css">
-  <!-- <link rel="icon" type="image/png" href="images/seal_icon.png"> -->
+  <style>
+    heading {
+      font-family: 'Lato', Verdana, Helvetica, sans-serif;
+      font-size: 18px;
+      font-weight: 700;
+      display: block;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 4px;
+      margin-bottom: 14px;
+      margin-top: 28px;
+    }
+    .tag {
+      display: inline-block;
+      background: #f0f0f0;
+      border-radius: 3px;
+      padding: 2px 7px;
+      font-size: 12px;
+      margin: 3px 3px 3px 0;
+      color: #444;
+    }
+    .exp-row td {
+      padding: 5px 0;
+      vertical-align: top;
+    }
+    .oss-stars { color: #999; font-size: 12px; margin-left: 4px; }
+  </style>
 </head>
 
 <body>
   <table style="width:100%;max-width:800px;border:0px;border-spacing:0px;border-collapse:separate;margin-right:auto;margin-left:auto;"><tbody>
-    <tr style="padding:0px">
-      <td style="padding:0px">
-        <table style="width:100%;border:0px;border-spacing:0px;border-collapse:separate;margin-right:auto;margin-left:auto;"><tbody>
-          <tr style="padding:0px">
-            <td style="padding:2.5%;width:63%;vertical-align:middle">
-              <p style="text-align:center">
-                <name>Rohan Winsor</name>
-              </p>
-              <p>I am a Machine Learning Engineer at <a href="https://rapidautomation.ai/">Rapid Acceleration Partners</a>, where I work on natural language processing and machine learning.
-              </p>
-              <p style="text-align:center">
-                <a href="mailto:rohan.w.charles@gmail.com">Email</a> &nbsp/&nbsp
-                <a href="data\ROHAN_RESUME.pdf"  target="_blank">CV</a> &nbsp/&nbsp
-                <a href="https://www.linkedin.com/in/rohan-winsor-a80547161/"  target="_blank">Linkedin</a> &nbsp/&nbsp
-                <a href="https://github.com/rohanwinsor/" target="_blank">Github</a>
-              </p>
-            </td>
-            <td style="padding:2.5%;width:40%;max-width:40%">
-              <!-- TODO: ADD A PHOTO -->
-              <!-- <a href="images/JonBarron.jpg"><img style="width:100%;max-width:100%" alt="profile photo" src="images/JonBarron_circle.jpg" class="hoverZoomLink"></a> -->
-            </td>
-          </tr>
-          </tbody> </td>
-        </tr>
-        </tbody>
-        </table>
-        <p>This is it for now will update in the future</p>
+    <tr><td style="padding:0px">
+
+      <!-- Header -->
+      <table style="width:100%;border:0px;border-spacing:0;margin:auto;"><tbody>
+        <tr><td style="padding:2.5%;vertical-align:middle">
+          <p style="text-align:center"><name>Rohan Winsor</name></p>
+          <p style="text-align:center;color:#666;margin-top:-8px;font-size:13px;">Chennai, India</p>
+          <p>
+            Senior Machine Learning Engineer specialising in LLM infrastructure, GPU inference optimisation, and multi-agent systems.
+            Currently at <a href="https://www.avalara.com/" target="_blank">Avalara</a> building a multi-cloud OpenAI-compatible LLM serving layer handling <strong>1M+ requests/day</strong>.
+            Previously an L5 ML Research Engineer at <a href="https://www.amazon.com/" target="_blank">Amazon</a>, where I improved product quality across 100M+ items and received the <strong>RISE Q4 2024 award</strong>.
+            Active open-source contributor with merged PRs in <a href="https://github.com/python/cpython" target="_blank">CPython</a>, <a href="https://github.com/BerriAI/litellm" target="_blank">LiteLLM</a>, and <a href="https://github.com/rasbt/LLMs-from-scratch" target="_blank">LLMs-from-scratch</a>.
+          </p>
+          <p style="text-align:center">
+            <a href="mailto:rohan.w.charles@gmail.com">Email</a> &nbsp;/&nbsp;
+            <a href="https://raw.githubusercontent.com/rohanwinsor/resume/main/resume.pdf" target="_blank">CV</a> &nbsp;/&nbsp;
+            <a href="https://www.linkedin.com/in/rohan-winsor/" target="_blank">LinkedIn</a> &nbsp;/&nbsp;
+            <a href="https://github.com/rohanwinsor/" target="_blank">GitHub</a>
+          </p>
+        </td></tr>
+      </tbody></table>
+
+      <table style="width:100%;border:0;border-spacing:0;margin:auto;"><tbody>
+        <tr><td style="padding:2.5%;">
+
+          <!-- Skills -->
+          <heading>Skills</heading>
+          <p style="margin:0 0 6px 0;">
+            <span class="tag">LLM Fine-tuning</span>
+            <span class="tag">Prompt Engineering</span>
+            <span class="tag">Multi-agent Systems</span>
+            <span class="tag">RAG</span>
+            <span class="tag">vLLM</span>
+            <span class="tag">CUDA</span>
+            <span class="tag">TensorRT</span>
+            <span class="tag">ONNX</span>
+            <span class="tag">PyTorch</span>
+            <span class="tag">LangChain</span>
+            <span class="tag">DSPy</span>
+            <span class="tag">Kubernetes</span>
+            <span class="tag">Temporal</span>
+            <span class="tag">Docker</span>
+            <span class="tag">CI/CD</span>
+          </p>
+
+          <!-- Experience -->
+          <heading>Experience</heading>
+          <table style="width:100%;border:0;border-spacing:0;"><tbody>
+            <tr class="exp-row">
+              <td style="width:60%"><strong>Senior ML Engineer</strong> &mdash; <a href="https://www.avalara.com/" target="_blank">Avalara</a></td>
+              <td style="text-align:right;color:#666;">Mar 2025 – Present</td>
+            </tr>
+            <tr class="exp-row">
+              <td colspan="2" style="color:#555;font-size:13px;padding-bottom:10px;">
+                Multi-cloud LLM server (Azure / AWS Bedrock / Vertex AI), BERT-based GPU inference pipeline, Celery → Temporal migration.
+              </td>
+            </tr>
+            <tr class="exp-row">
+              <td><strong>ML Research Engineer II (L5)</strong> &mdash; <a href="https://www.amazon.com/" target="_blank">Amazon</a></td>
+              <td style="text-align:right;color:#666;">Apr 2024 – Mar 2025</td>
+            </tr>
+            <tr class="exp-row">
+              <td colspan="2" style="color:#555;font-size:13px;padding-bottom:10px;">
+                A/B testing across 100M+ products, fine-tuned Mistral 7B with vLLM, automated prompt fine-tuning via DSPy. RISE Q4 2024 award.
+              </td>
+            </tr>
+            <tr class="exp-row">
+              <td><strong>Senior ML Engineer</strong> &mdash; <a href="https://rapidautomation.ai/" target="_blank">Rapid Acceleration Partners</a></td>
+              <td style="text-align:right;color:#666;">Feb 2020 – Jun 2024</td>
+            </tr>
+            <tr class="exp-row">
+              <td colspan="2" style="color:#555;font-size:13px;padding-bottom:10px;">
+                Led ML team of 4. TensorRT/CUDA inference optimisation (48% latency reduction), GPU document understanding pipelines, LangChain chatbot.
+              </td>
+            </tr>
+            <tr class="exp-row">
+              <td><strong>Data Science Associate</strong> &mdash; Zoomrx</td>
+              <td style="text-align:right;color:#666;">Dec 2018 – Nov 2019</td>
+            </tr>
+          </tbody></table>
+
+          <!-- OSS -->
+          <heading>Open Source</heading>
+          <table style="width:100%;border:0;border-spacing:0;"><tbody>
+            <tr>
+              <td style="padding:4px 0;width:55%;vertical-align:top;">
+                <a href="https://github.com/python/cpython" target="_blank"><strong>cpython</strong></a>
+                <span class="oss-stars">&#9733; 73k</span>
+              </td>
+              <td style="padding:4px 0;vertical-align:top;color:#555;">Python core runtime</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 0;vertical-align:top;">
+                <a href="https://github.com/BerriAI/litellm" target="_blank"><strong>litellm</strong></a>
+                <span class="oss-stars">&#9733; 50k</span>
+              </td>
+              <td style="padding:4px 0;vertical-align:top;color:#555;">Unified LLM API supporting 100+ providers</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 0;vertical-align:top;">
+                <a href="https://github.com/rasbt/LLMs-from-scratch" target="_blank"><strong>LLMs-from-scratch</strong></a>
+                <span class="oss-stars">&#9733; 97k</span>
+              </td>
+              <td style="padding:4px 0;vertical-align:top;color:#555;">Building a ChatGPT-like LLM from scratch</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 0;vertical-align:top;">
+                <a href="https://github.com/microsoft/textgrad" target="_blank"><strong>textgrad</strong></a>
+                <span class="oss-stars">&#9733; 3.6k</span>
+              </td>
+              <td style="padding:4px 0;vertical-align:top;color:#555;">Automatic differentiation via LLMs</td>
+            </tr>
+            <tr>
+              <td style="padding:4px 0;vertical-align:top;">
+                <a href="https://github.com/Palashio/libra" target="_blank"><strong>libra</strong></a>
+                <span class="oss-stars">&#9733; 1.9k</span>
+              </td>
+              <td style="padding:4px 0;vertical-align:top;color:#555;">Ergonomic AutoML for non-technical users</td>
+            </tr>
+          </tbody></table>
+
+        </td></tr>
+      </tbody></table>
+
+    </td></tr>
+  </tbody></table>
 </body>
 
 </html>

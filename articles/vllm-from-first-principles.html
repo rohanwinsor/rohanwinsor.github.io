@@ -363,14 +363,14 @@
   <h3>Phase 1: Prefill</h3>
 
   <p>
-    You send in a prompt. The model reads the whole thing in a <strong>single forward pass</strong> — all
+    You send in a prompt. The model reads the whole thing in a <strong>single forward pass</strong>: all
     tokens processed at once, in parallel.
   </p>
 
   <p>
     That parallelism is what makes prefill <strong>compute-bound</strong>: processing all N positions
     together means large, dense matrix multiplications across the full input. Attention is O(n²) in
-    sequence length, so a longer prompt is meaningfully more expensive — but it's all done in one shot.
+    sequence length, so a longer prompt is meaningfully more expensive, but it's all done in one shot.
     The factory floor is running at capacity.
   </p>
 
@@ -390,7 +390,7 @@
   <p>
     Each decode step takes the single most-recently-generated token as input, runs a full forward pass
     through all the model's layers, and produces the next token. To generate one token, the model still
-    has to load <em>all</em> of its weights through the memory bus. For Llama-3 8B in FP16,
+    has to load <em>all</em> of its weights through the memory bus. For Llama-3-8B in FP16,
     that's 8 billion parameters × 2 bytes ≈ <strong>16&nbsp;GB</strong>
     of data moving from HBM to the compute units per output token.
     At the A100's 2&nbsp;TB/s peak bandwidth, that's an idealized lower bound of about
@@ -413,7 +413,7 @@ Decode:
   Step 2: [tok_{n+2}] → tok_{n+3}
   Step 3: [tok_{n+3}] → tok_{n+4}
   ...                                 ← N steps for N output tokens
-  Bottleneck: MEMORY BANDWIDTH (16 GB of weights per step, for Llama-3 8B FP16)
+  Bottleneck: MEMORY BANDWIDTH (16 GB of weights per step, for Llama-3-8B FP16)
   Throughput: slow per-token, compute underutilized (waiting on the bus, not the ALUs)</div>
 
   <p>
@@ -527,7 +527,7 @@ Decode:
     "logical block 0 → physical block #47, logical block 1 → physical block #103, ..."
     All requests draw their physical blocks from the same shared pool, but each request's
     block table is private to it. The blocks don't need to be contiguous. The block table is the
-    indirection layer that makes non-contiguous storage look seamless to the attention kernel.
+    indirection layer that makes non-contiguous storage look contiguous to the attention kernel.
   </p>
 
 <div class="diagram">per-request block tables (each private)
@@ -673,19 +673,64 @@ Free blocks instantly available to any request.</div>
   <h2 id="continuous">The Fix: Continuous Batching</h2>
 
   <p>
-    There is no fundamental reason to wait for an entire request-level batch.
-    After each model iteration, account for completed work, release capacity, and reconsider which
-    waiting requests can be admitted at the next scheduling opportunity.
+    The model runs in a tight loop. Each iteration is one GPU forward pass, and the
+    scheduler decides which requests are in that pass, reconsidering the instant any
+    request finishes rather than waiting for a whole batch to drain.
+  </p>
+
+  <p>Before that loop makes sense, two facts about a single request need to be on the table.</p>
+
+  <p>
+    <strong>When does a request finish?</strong> Decode emits one token at a time, but
+    something has to end it. Two things can. The model can sample an
+    <strong>end-of-sequence token</strong>, a special token in the vocabulary that means
+    "stop", drawn from the probability distribution exactly like any ordinary token. Or
+    the request can hit a <strong>length limit</strong> the caller set when they sent it
+    ("generate at most N tokens"). Until one of those fires, the request stays in the
+    running set and produces one more token on every pass.
   </p>
 
   <p>
-    This is <strong>iteration-level scheduling</strong>, as opposed to request-level scheduling.
-    The scheduling granularity drops from "whole request" to a token-budgeted model step.
+    <strong>How much can one pass do?</strong> A forward pass carries a fixed
+    <strong>token budget</strong>: the total number of tokens it will compute that
+    iteration, summed across every request in the batch. A decode step spends just one
+    token per running request, since each produces a single new token. Prefill is far
+    heavier: ingesting a 1,000-token prompt costs 1,000 tokens of budget at once. The
+    budget is a tuning knob, set high enough to keep the GPU saturated and low enough to
+    bound how long any single step takes. It is what gates admission: the scheduler can
+    only pull in new work while the step still has budget, and free KV blocks, to spare.
   </p>
 
+  <p>With those two facts in hand, each forward pass does three things, in order:</p>
+
+  <ol>
+    <li>
+      <strong>Collect completions.</strong> Scan the running set. Any request that just
+      emitted its end-of-sequence token or reached its length limit is finished. Remove it,
+      release its KV blocks back to the global pool, and stream the result to the caller.
+    </li>
+    <li>
+      <strong>Admit from waiting.</strong> With the freed capacity, pull the next request
+      off the waiting queue and add it to the running set. Three constraints gate admission:
+      the step's remaining token budget, a cap on how many requests may run at once, and available KV blocks.
+      If block allocation fails mid-admission, the scheduler may <strong>preempt</strong>
+      a lower-priority running request instead: release its KV blocks, reset its
+      computed-token count, and return it to the front of <code>waiting</code>. Prefix
+      caching may recover that work on re-admission; otherwise the request restarts.
+    </li>
+    <li>
+      <strong>Run the next forward pass</strong> on the updated running set. Every request
+      advances by one token. Return to step 1.
+    </li>
+  </ol>
+
   <p>
-    vLLM's scheduler maintains two primary collections:
+    This is <strong>iteration-level scheduling</strong>. The batch never "finishes" as a
+    unit. Tokens flow out as requests complete, new requests flow in immediately, and the
+    GPU never idles waiting for a straggler.
   </p>
+
+  <p>vLLM tracks two collections to implement this:</p>
 
   <div class="table-wrap">
   <table>
@@ -694,43 +739,53 @@ Free blocks instantly available to any request.</div>
     </thead>
     <tbody>
       <tr><td><code>waiting</code></td><td>Requests awaiting admission or resumption, including new arrivals and preempted requests</td></tr>
-      <tr><td><code>running</code></td><td>Admitted requests with token work in progress; this can include prefill, decode, or speculative-token work</td></tr>
+      <tr><td><code>running</code></td><td>Admitted requests currently being processed; each gets one new token of output per forward pass</td></tr>
     </tbody>
   </table>
   </div>
 
-  <p>
-    These names describe request lifecycle, not separate prefill and decode queues. In vLLM V1,
-    the scheduler tracks how many tokens each request already has computed and how many known tokens
-    it needs to catch up to. At each step it assigns token work subject to a global token budget,
-    a maximum number of running requests, encoder constraints where relevant, and available KV blocks.
-    It considers running requests first, then admits or resumes waiting requests while those budgets allow.
-  </p>
+<div class="diagram">  
+  ┌────────────────────────────────────────────────────────────────┐
+  │                         vLLM Engine                            │
+  │                                                                │
+  │   ┌─────────────────────────┐      ┌──────────────────────┐    │
+  │   │       Scheduler         │◄────►│   KV Cache Manager   │    │
+  │   │                         │      │                      │    │
+  │   │   waiting queue         │      │  global block pool   │    │
+  │   │   running set           │      │  per-req block table │    │
+  │   └────────────┬────────────┘      └──────────────────────┘    │
+  │                │ per-iteration batch                           │
+  │                ▼                                               │
+  │   ┌─────────────────────────┐                                  │
+  │   │     Model Executor      │                                  │
+  │   └────────────┬────────────┘                                  │
+  │                │ forward pass                                  │
+  │   ┌────────────▼──────────────────────────────────────────┐    │
+  │   │                      GPU HBM                          │    │
+  │   │   ┌───────────────────────┐  ┌──────────────────────┐ │    │
+  │   │   │     model weights     │  │      KV blocks       │ │    │
+  │   │   └───────────────────────┘  └──────────────────────┘ │    │
+  │   └───────────────────────────────────────────────────────┘    │
+  └────────────────────────────────────────────────────────────────┘</div>
 
-  <p>
-    If allocating the required KV slots fails, the scheduler may preempt a lower-priority running
-    request. Preemption frees that request's block references, resets its computed-token count, and
-    puts it back at the front of <code>waiting</code>. If automatic prefix caching is enabled and the
-    released full blocks have not been evicted or overwritten, a later cache lookup may recover much
-    of that work; it is not guaranteed. Completed requests also release their references so their
-    capacity can be reused. This iteration-level resource accounting is what keeps the active batch
-    from draining toward a few long stragglers.
-  </p>
+<div class="diagram">STATIC BATCHING            (holds all results until the longest request finishes)
+  Each character = 10 decode steps.
 
-<div class="diagram">Static batching:
-  t=0  [A████████████████] [B████████] [C████████████████████████████████]
-  t=50                   ↑                                               ↑
-                  B finishes here.              A finishes here.   C finishes here.
-                  GPU still runs for A and C.   GPU still runs for C.
+  slot A:  AAAAAAAAAAAAAAAAAAAA░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  done at t=200, idle 300 steps
+  slot B:  BBBBBBBBBB░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░  done at t=100, idle 400 steps
+  slot C:  CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC  done at t=500 (straggler)
+           ░ = idle, waiting for C
+  700 idle slot-steps out of 1500 total (47% waste). Batch held until t=500.
 
-  Slots B completed: idle for 450 steps. Slot A completed: idle for 200 steps.
 
-Continuous batching:
-  t=0  [A████████████] [B████] [C██████████████████████]
-  t=50                ↑ B finishes → D is admitted next
-  t=130               ↑ A finishes → E is admitted next
-  ...
-    Under sustained load, completed slots can be refilled at the next scheduling opportunity.</div>
+CONTINUOUS BATCHING        (new request admitted the iteration after a slot frees)
+  Each character = 10 decode steps.
+
+  slot A:  AAAAAAAAAAAAAAAAAAAA│DDDDDDDDDDDDDDDDDDDDDDDDDDDDD  A done → D admitted at t=200
+  slot B:  BBBBBBBBBB│EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE  B done → E admitted at t=100
+  slot C:  CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC  C runs to completion at t=500
+           │ = admission boundary
+  Slot-step waste: 0%. Results stream out as each request finishes.</div>
 
   <h3>Chunked Prefill: Solving Head-of-Line Blocking</h3>
 
@@ -937,7 +992,7 @@ Continuous batching:
   </p>
 
   <p>
-    Note that speculative decoding addresses a different bottleneck than PagedAttention and
+    Speculative decoding addresses a different bottleneck than PagedAttention and
     continuous batching. Those fix memory capacity and GPU utilization.
     Speculative decoding reduces the effective number of sequential steps required,
     which can reduce per-request latency when proposal and verification overheads are favorable.
@@ -1191,16 +1246,16 @@ vllm bench serve \
   <h2>Further Reading</h2>
 
   <ul>
-    <li><a href="https://horace.io/brrr_intro.html">Making Deep Learning Go Brrr From First Principles</a> — Horace He. The article that inspired this one. Read it first if you haven't.</li>
-    <li><a href="https://arxiv.org/abs/2309.06180">Efficient Memory Management for Large Language Model Serving with PagedAttention</a> — Kwon et al., SOSP 2023. The original vLLM paper. Dense but worth it.</li>
-    <li><a href="https://docs.vllm.ai/en/stable/design/prefix_caching/">Automatic Prefix Caching</a> — vLLM's current design document for block hashing, allocation, and eviction.</li>
-    <li><a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/sched/scheduler.py">V1 scheduler source at v0.22.1</a> — token budgeting, admission, KV allocation, and preemption in the pinned implementation.</li>
-    <li><a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/kv_cache_manager.py">V1 KV-cache manager source at v0.22.1</a> — prefix-cache lookup, slot allocation, and block release.</li>
-    <li><a href="https://docs.vllm.ai/en/stable/features/speculative_decoding/">Speculative Decoding</a> — current vLLM documentation covering draft-model, EAGLE, MTP, n-gram, suffix, and related methods.</li>
-    <li><a href="https://arxiv.org/abs/2211.17192">Fast Inference from Transformers via Speculative Decoding</a> — the classic exact draft-and-verify algorithm.</li>
-    <li><a href="https://vllm.ai/blog/2025-01-14-struct-decode-intro">Structured Decoding in vLLM: a gentle introduction</a> — the official vLLM blog post on structured decoding.</li>
-    <li><a href="https://www.aleksagordic.com/blog/vllm">Inside vLLM: Anatomy of a High-Throughput LLM Inference System</a> — a detailed code-level walkthrough.</li>
-    <li><a href="https://insujang.github.io/2024-01-07/llm-inference-continuous-batching-and-pagedattention/">LLM Inference: Continuous Batching and PagedAttention</a> — clear derivation of the continuous batching math.</li>
+    <li><a href="https://horace.io/brrr_intro.html">Making Deep Learning Go Brrr From First Principles</a>. Horace He. The article that inspired this one. Read it first if you haven't.</li>
+    <li><a href="https://arxiv.org/abs/2309.06180">Efficient Memory Management for Large Language Model Serving with PagedAttention</a>. Kwon et al., SOSP 2023. The original vLLM paper. Dense but worth it.</li>
+    <li><a href="https://docs.vllm.ai/en/stable/design/prefix_caching/">Automatic Prefix Caching</a>. vLLM's current design document for block hashing, allocation, and eviction.</li>
+    <li><a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/sched/scheduler.py">V1 scheduler source at v0.22.1</a>. Token budgeting, admission, KV allocation, and preemption in the pinned implementation.</li>
+    <li><a href="https://github.com/vllm-project/vllm/blob/v0.22.1/vllm/v1/core/kv_cache_manager.py">V1 KV-cache manager source at v0.22.1</a>. Prefix-cache lookup, slot allocation, and block release.</li>
+    <li><a href="https://docs.vllm.ai/en/stable/features/speculative_decoding/">Speculative Decoding</a>. Current vLLM documentation covering draft-model, EAGLE, MTP, n-gram, suffix, and related methods.</li>
+    <li><a href="https://arxiv.org/abs/2211.17192">Fast Inference from Transformers via Speculative Decoding</a>. The classic exact draft-and-verify algorithm.</li>
+    <li><a href="https://vllm.ai/blog/2025-01-14-struct-decode-intro">Structured Decoding in vLLM: a gentle introduction</a>. The official vLLM blog post on structured decoding.</li>
+    <li><a href="https://www.aleksagordic.com/blog/vllm">Inside vLLM: Anatomy of a High-Throughput LLM Inference System</a>. A detailed code-level walkthrough.</li>
+    <li><a href="https://insujang.github.io/2024-01-07/llm-inference-continuous-batching-and-pagedattention/">LLM Inference: Continuous Batching and PagedAttention</a>. Clear derivation of the continuous batching math.</li>
   </ul>
 
   <div class="footer">

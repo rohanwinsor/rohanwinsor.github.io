@@ -1,0 +1,1201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="A first-principles explanation of speculative decoding: how n-gram, draft models, EAGLE, and MTP generate multiple tokens per inference step." />
+  <meta name="author" content="Rohan" />
+  <meta name="robots" content="index, follow" />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="Speculative Decoding From First Principles: Four Tokens for the Price of One" />
+  <meta property="og:description" content="How n-gram lookup, draft models, EAGLE, and MTP turn the sequential bottleneck of autoregressive inference into a guess-and-verify problem." />
+  <meta property="article:published_time" content="2026-06-23" />
+  <meta name="twitter:card" content="summary" />
+  <title>Speculative Decoding From First Principles: Four Tokens for the Price of One</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      font-size: 18px;
+      line-height: 1.75;
+      color: #1a1a1a;
+      background: #fff;
+      padding: 0 20px;
+    }
+
+    .wrapper {
+      max-width: 780px;
+      margin: 0 auto;
+      padding: 60px 0 120px;
+    }
+
+    /* ── Typography ─────────────────────────────────────────────── */
+    h1 {
+      font-size: 2.1rem;
+      font-weight: 700;
+      line-height: 1.2;
+      margin-bottom: 12px;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      font-size: 1.1rem;
+      color: #555;
+      margin-bottom: 10px;
+    }
+
+    .byline {
+      font-size: 0.9rem;
+      color: #6b7280;
+      margin-bottom: 32px;
+    }
+
+    .summary {
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin-bottom: 28px;
+    }
+
+    .summary h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #166534;
+      border: none;
+      margin: 0 0 12px;
+      padding: 0;
+    }
+
+    .summary ul { margin-bottom: 0; }
+
+    .source-note {
+      color: #6b7280;
+      font-size: 0.84rem;
+      margin-top: -14px;
+    }
+
+    .version-note {
+      color: #4b5563;
+      font-size: 0.9rem;
+    }
+
+    h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      margin-top: 64px;
+      margin-bottom: 16px;
+      padding-bottom: 6px;
+      border-bottom: 2px solid #e8e8e8;
+    }
+
+    h3 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      margin-top: 36px;
+      margin-bottom: 10px;
+      color: #111;
+    }
+
+    p {
+      margin-bottom: 20px;
+    }
+
+    a {
+      color: #2563eb;
+      text-decoration: none;
+      border-bottom: 1px solid #bfdbfe;
+      transition: border-color 0.15s;
+    }
+    a:hover { border-color: #2563eb; }
+
+    strong { font-weight: 600; }
+    em { font-style: italic; }
+
+    /* ── Attribution box ────────────────────────────────────────── */
+    .attribution {
+      background: #f0f7ff;
+      border-left: 4px solid #2563eb;
+      padding: 16px 20px;
+      border-radius: 0 6px 6px 0;
+      margin-bottom: 48px;
+      font-size: 0.95rem;
+      color: #374151;
+    }
+
+    /* ── Callout / insight boxes ────────────────────────────────── */
+    .callout {
+      background: #fefce8;
+      border-left: 4px solid #ca8a04;
+      padding: 16px 20px;
+      border-radius: 0 6px 6px 0;
+      margin: 28px 0;
+      font-size: 0.97rem;
+    }
+
+    .callout.blue {
+      background: #f0f9ff;
+      border-left-color: #0284c7;
+    }
+
+    .callout.green {
+      background: #f0fdf4;
+      border-left-color: #16a34a;
+    }
+
+    .callout.red {
+      background: #fef2f2;
+      border-left-color: #dc2626;
+    }
+
+    .callout p:last-child { margin-bottom: 0; }
+
+    /* ── Code / monospace ───────────────────────────────────────── */
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.88em;
+      background: #f3f4f6;
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #1a1a1a;
+    }
+
+    pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.85rem;
+      background: #f3f4f6;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px 24px;
+      overflow-x: auto;
+      line-height: 1.5;
+      margin: 24px 0;
+      color: #1a1a1a;
+    }
+
+    /* ── Tables ─────────────────────────────────────────────────── */
+    .table-wrap { overflow-x: auto; margin: 28px 0; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.93rem;
+    }
+
+    th {
+      background: #f3f4f6;
+      font-weight: 600;
+      text-align: left;
+      padding: 10px 14px;
+      border: 1px solid #e5e7eb;
+    }
+
+    td {
+      padding: 9px 14px;
+      border: 1px solid #e5e7eb;
+      vertical-align: top;
+    }
+
+    tr:nth-child(even) td { background: #fafafa; }
+
+    /* ── Diagrams / ASCII art ───────────────────────────────────── */
+    .diagram {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.8rem;
+      background: #f8f9fa;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px 24px;
+      overflow-x: auto;
+      line-height: 1.4;
+      margin: 28px 0;
+      white-space: pre;
+    }
+
+    /* ── Section divider ────────────────────────────────────────── */
+    hr {
+      border: none;
+      border-top: 1px solid #e8e8e8;
+      margin: 60px 0;
+    }
+
+    /* ── Lists ──────────────────────────────────────────────────── */
+    ul, ol {
+      padding-left: 24px;
+      margin-bottom: 20px;
+    }
+
+    li { margin-bottom: 8px; }
+
+    /* ── Table of contents ──────────────────────────────────────── */
+    .toc {
+      background: #f8f9fa;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 20px 24px;
+      margin-bottom: 48px;
+      font-size: 0.92rem;
+    }
+    .toc h2 {
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6b7280;
+      border: none;
+      margin-top: 0;
+      margin-bottom: 12px;
+      padding-bottom: 0;
+    }
+    .toc ol {
+      margin-bottom: 0;
+      padding-left: 20px;
+    }
+    .toc li { margin-bottom: 4px; }
+    .toc a { border-bottom: none; color: #374151; }
+    .toc a:hover { color: #2563eb; }
+
+    /* ── Footer ─────────────────────────────────────────────────── */
+    .footer {
+      margin-top: 80px;
+      padding-top: 24px;
+      border-top: 1px solid #e8e8e8;
+      font-size: 0.88rem;
+      color: #6b7280;
+    }
+
+    @media (max-width: 600px) {
+      body { font-size: 16px; }
+      h1 { font-size: 1.6rem; }
+      h2 { font-size: 1.25rem; }
+    }
+  </style>
+</head>
+<body>
+<main>
+<article>
+<div class="wrapper">
+
+  <h1>Speculative Decoding From First Principles: Four Tokens for the Price of One</h1>
+  <p class="subtitle">How n-gram lookup, draft models, EAGLE, and MTP turn sequential autoregressive inference into a guess-and-verify problem.</p>
+
+  <div class="attribution">
+    The core speculative decoding algorithm was independently published by
+    <a href="https://arxiv.org/abs/2211.17192">Leviathan et al. (Google DeepMind, 2023)</a>
+    and <a href="https://arxiv.org/abs/2302.01318">Chen et al. (DeepMind, 2023)</a>.
+    This article builds on those foundations and traces how n-gram, EAGLE, and MTP methods
+    are each trying to solve the same underlying problem: produce a cheap guess the large model
+    can verify in bulk. All four approaches are different answers to the same question.
+  </div>
+
+  <nav class="toc" aria-label="Table of contents">
+    <h2>Contents</h2>
+    <ol>
+      <li><a href="#bottleneck">The Cost of One Token</a></li>
+      <li><a href="#insight">The Core Insight: Guess and Verify</a></li>
+      <li><a href="#algorithm">The Algorithm: A Worked Step</a></li>
+      <li><a href="#math">The Math: Expected Speedup</a></li>
+      <li><a href="#ngram">N-gram Drafting: Zero Extra Model Cost</a></li>
+      <li><a href="#draft-model">Draft Model Drafting: The Classic Approach</a></li>
+      <li><a href="#eagle">EAGLE: Teaching the Model to Draft Itself</a></li>
+      <li><a href="#mtp">MTP: Baking Speculation into Training</a></li>
+      <li><a href="#comparison">Comparing the Approaches</a></li>
+      <li><a href="#when">When Does Speculation Actually Help?</a></li>
+    </ol>
+  </nav>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="bottleneck">The Cost of One Token</h2>
+
+  <p>
+    Autoregressive LLM inference is sequential by construction. To generate token T+1, the model
+    must have already generated token T. There is no way around this: T+1's attention computation
+    depends on T's key and value vectors, which don't exist until T is sampled. The dependency chain
+    is one link long at every step.
+  </p>
+
+  <p>
+    At small batch sizes, each decode step is dominated by streaming the model's weights from
+    high-bandwidth memory (HBM) to the compute units, not by the compute itself. For Llama-3-8B
+    in FP16, that's 16&nbsp;GB of weight data per step; for Llama-3-70B spread across its required
+    multi-GPU setup, the aggregate across all devices is 140&nbsp;GB. On a single A100 at
+    2&nbsp;TB/s peak HBM bandwidth, an 8B decode step has an idealized lower bound of ~8&nbsp;ms
+    of memory traffic per token at batch size 1. In practice, weight streaming and compute
+    overlap partially, but the arithmetic intensity of a single-token decode at small batch sizes is
+    roughly 1–2&nbsp;FLOPs/byte — about 100× below the A100's ridge point of ~156&nbsp;FLOPs/byte.
+    This is squarely memory-bandwidth-bound.
+  </p>
+
+  <p>
+    The GPU is not computing; it's waiting for the bus. During that window of HBM traffic, the
+    matrix-multiply units sit largely idle. This is the problem speculative decoding addresses.
+  </p>
+
+  <div class="callout red">
+    <p>
+      <strong>The single-stream problem:</strong> at batch size 1, a decode step loads the
+      model's full weight matrix — 16&nbsp;GB for an 8B model, 140&nbsp;GB aggregate for a 70B
+      across its GPUs — to produce one token. The compute units could have run 156× more
+      arithmetic in the time the bus took to deliver the weights. Almost all of that compute
+      capacity goes to waste.
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="insight">The Core Insight: Guess and Verify</h2>
+
+  <p>
+    There is a key asymmetry in transformer inference that speculative decoding exploits.
+  </p>
+
+  <p>
+    <strong>Generating</strong> k tokens autoregressively requires k sequential forward passes:
+    each pass produces one token, which is fed back as input for the next. You cannot parallelize
+    across the k steps because each step depends on the previous one.
+  </p>
+
+  <p>
+    <strong>Verifying</strong> k proposed tokens requires only one forward pass. You feed the model
+    the full sequence — context plus the k candidates — and the model evaluates all positions
+    simultaneously. The attention mechanism already processes all positions in parallel in a single
+    pass; that's how prefill works. At the end of this single forward pass, you know, for every
+    candidate token, what probability the large model assigns to it given its predecessors.
+  </p>
+
+  <div class="callout">
+    <p>
+      <strong>The asymmetry:</strong> generation is sequential (k steps), verification is parallel
+      (1 step). If you can obtain a cheap guess for the next k tokens, you can verify all k at
+      the cost of approximately one standard decode step.
+    </p>
+  </div>
+
+  <p>
+    The second key property is correctness: speculative decoding is <em>lossless</em>. The output
+    distribution of the full system is provably identical to the distribution you would have obtained
+    by running the large model alone, step by step. The draft tokens are just a proposal; the
+    acceptance-rejection mechanism ensures the final output looks as if the large model made every
+    decision itself. This is not an approximation. When a draft token is rejected, a corrected token
+    is sampled such that the combined process yields exactly the target distribution.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="algorithm">The Algorithm: A Worked Step</h2>
+
+  <p>
+    Let's trace through one complete speculation round in detail.
+  </p>
+
+  <h3>Setup</h3>
+
+  <p>
+    The current context is <strong>"The capital of France is"</strong>. We want to generate the
+    next several tokens. We have a drafter (whatever mechanism — we'll discuss the options shortly)
+    and a large target model.
+  </p>
+
+  <h3>Step 1: Draft</h3>
+
+  <p>
+    The drafter runs autoregressively, fast and cheaply, producing 4 draft tokens:
+  </p>
+
+<div class="diagram">Context: "The capital of France is"
+
+Drafter run 1: sees "...is"           → proposes "Paris"  (p_draft = 0.82)
+Drafter run 2: sees "...is Paris"     → proposes ","      (p_draft = 0.62)
+Drafter run 3: sees "...Paris ,"      → proposes "known"  (p_draft = 0.48)
+Drafter run 4: sees "..., known"      → proposes "for"    (p_draft = 0.71)
+
+Draft sequence: ["Paris", ",", "known", "for"]</div>
+
+  <h3>Step 2: Verify</h3>
+
+  <p>
+    The target model processes the 4 draft tokens in a single forward pass, attending over the full
+    sequence but only computing new KV entries for the draft positions — the original context's
+    KV cache is already populated from prior decode steps. This is more like a short decode pass
+    for k&nbsp;=&nbsp;4 positions than a full prefill from scratch. Because only 4 new positions
+    need computation (with attention back to the cached context), this pass costs roughly the same
+    as generating one token normally at small batch sizes.
+  </p>
+
+<div class="diagram">Target model verification pass (draft suffix only; context KV is already cached):
+cached KV: ["The", "capital", "of", "France", "is"]  ← no recomputation
+new:                                  ["Paris", ",", "known", "for"]  ← 4 positions computed
+
+Position n logits (after "is" → predicts x̃₁):
+  Already available from the prior decode step's cached output.
+  p_target("Paris") = 0.88   ← used to verify draft token 1
+
+New logits from this verification pass (draft suffix):
+  Position n+1 (after "Paris")  → p_target(",")     = 0.65   ← verify draft 2
+  Position n+2 (after ",")      → p_target("known") = 0.14   ← verify draft 3  (mismatch)
+  Position n+3 (after "known")  → p_target("for")   = 0.52   ← verify draft 4
+  Position n+4 (after "for")    → p_target(...)     = distribution for bonus token</div>
+
+  <h3>Step 3: Accept or Reject, Left to Right</h3>
+
+  <p>
+    For each draft token, compute the acceptance probability:
+  </p>
+
+  <pre>acceptance_prob = min(1, p_target(x̃) / p_draft(x̃))</pre>
+
+  <p>
+    Sample u&nbsp;~&nbsp;Uniform[0,&nbsp;1]. If u&nbsp;≤&nbsp;acceptance_prob: accept. Else: reject
+    and stop. On rejection, sample a corrected token from the <em>adjusted distribution</em>:
+  </p>
+
+  <pre>p_adjusted(x) = max(0, p_target(x) − p_draft(x))  (then normalize)</pre>
+
+<div class="diagram">Token 1: "Paris"
+  p_target = 0.88,  p_draft = 0.82
+  acceptance_prob = min(1, 0.88 / 0.82) = min(1, 1.07) = 1.0
+  → ACCEPT (always; target assigns at least as much probability as drafter)
+
+Token 2: ","
+  p_target = 0.65,  p_draft = 0.62
+  acceptance_prob = min(1, 0.65 / 0.62) = min(1, 1.05) = 1.0
+  → ACCEPT
+
+Token 3: "known"
+  p_target = 0.14,  p_draft = 0.48
+  acceptance_prob = min(1, 0.14 / 0.48) = 0.29
+  Sample u = 0.55    →    0.55 > 0.29    →    REJECT
+
+  Adjusted distribution at this position:
+    "the":   p_target=0.45, p_draft=0.05  →  max(0, 0.45−0.05) = 0.40
+    "a":     p_target=0.20, p_draft=0.04  →  max(0, 0.20−0.04) = 0.16
+    "also":  p_target=0.09, p_draft=0.01  →  max(0, 0.09−0.01) = 0.08
+    "known": p_target=0.14, p_draft=0.48  →  max(0, 0.14−0.48) = 0.00 (clamped)
+    ...
+  Normalize → sample → "the"
+
+Token 4: "for" — DISCARDED (we stopped at the first rejection)</div>
+
+  <h3>Result</h3>
+
+  <p>
+    This speculation round appended three tokens to the context: <strong>"Paris"</strong>,
+    <strong>","</strong>, and <strong>"the"</strong>. The next speculation round begins
+    from this updated position.
+  </p>
+
+<div class="diagram">BASELINE (three separate decode steps):
+  Target forward pass 1  →  "Paris"
+  Target forward pass 2  →  ","
+  Target forward pass 3  →  "home"
+  Cost: 3 × (load 140 GB weights)
+
+SPECULATIVE DECODING (same three tokens):
+  Drafter × 4 steps      →  "Paris", ",", "known", "for"   (cheap)
+  Target forward pass × 1:
+    ✓ "Paris"   accepted
+    ✓ ","       accepted
+    ✗ "known"   rejected → "the" (sampled from adjusted dist)
+    — "for"     discarded
+  Cost: 4 × (cheap draft) + 1 × (load 140 GB weights)
+
+If drafter cost ≪ target cost: roughly 3 tokens for the price of ~1 target step.</div>
+
+  <div class="callout green">
+    <p>
+      <strong>Correctness guarantee:</strong> the algorithm as a whole samples from exactly
+      p_target — but the mechanism on rejection is subtler than sampling directly from p_target.
+      The corrected token is drawn from the <em>residual distribution</em>
+      max(0,&nbsp;p_target&nbsp;−&nbsp;p_draft)&nbsp;/&nbsp;Z — the probability mass that the
+      target assigns beyond what the drafter already covered. The combination of accepted-draft
+      probability and residual-sample probability integrates to p_target at every position. This
+      is what Leviathan et al. and Chen et al. prove: the speculative sampling process is
+      equivalent in distribution to running the target model alone.
+    </p>
+  </div>
+
+  <h3>The Bonus Token</h3>
+
+  <p>
+    Notice that the target model's forward pass produced logits at position n+4 — the position
+    after the last draft token — as a byproduct. If all k draft tokens had been accepted, those
+    logits would give us a <em>free bonus token</em>: k+1 tokens from one verification step.
+    This bonus is why the expected output per step slightly exceeds k even when α is high.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="math">The Math: Expected Speedup</h2>
+
+  <p>
+    Let α be the per-token acceptance rate (the probability that a single draft token is accepted,
+    averaged across positions). Assuming independence across positions, the expected number of
+    tokens produced per verification step is:
+  </p>
+
+  <pre>E[tokens per step] = (1 − α^(k+1)) / (1 − α)
+
+where k = number of draft tokens per round</pre>
+
+  <p>
+    The formula accounts for all outcomes: all k accepted (plus bonus), first rejection at position 1,
+    at position 2, and so on. Each outcome contributes its token count weighted by its probability.
+  </p>
+
+  <div class="table-wrap">
+  <table>
+    <caption style="caption-side:bottom; font-size:0.82rem; color:#6b7280; text-align:left; padding-top:8px;">
+      Expected tokens per verification step for various acceptance rates and draft lengths.
+      Baseline (no speculation) produces exactly 1 token per target-model step.
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Draft tokens (k)</th>
+        <th scope="col">α = 0.60</th>
+        <th scope="col">α = 0.75</th>
+        <th scope="col">α = 0.85</th>
+        <th scope="col">α = 0.90</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr><td>2</td><td>1.94</td><td>2.19</td><td>2.38</td><td>2.47</td></tr>
+      <tr><td>4</td><td>2.30</td><td>2.93</td><td>3.46</td><td>3.77</td></tr>
+      <tr><td>6</td><td>2.40</td><td>3.23</td><td>4.07</td><td>4.69</td></tr>
+      <tr><td>8</td><td>2.42</td><td>3.33</td><td>4.39</td><td>5.29</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p>
+    The table reveals two things. First, returns diminish with k: going from k=4 to k=8 at α=0.85
+    gains only ~0.93 additional tokens, not another 3.46. Second, acceptance rate matters far more
+    than draft length: α=0.90 at k=4 outperforms α=0.60 at k=8. A high-quality drafter is worth
+    more than a long draft.
+  </p>
+
+  <h3>The Real Speedup</h3>
+
+  <p>
+    The table above assumes the drafter is free. It never is. Let c be the cost of one draft step
+    as a fraction of one target-model step (so c=1 means the drafter costs as much as the target,
+    which would make speculation pointless). The realized speedup is:
+  </p>
+
+  <pre>Speedup = E[tokens per step] / (k × c + v)
+         = [(1 − α^(k+1)) / (1 − α)] / (k × c + v)
+
+where v = cost of the verification step relative to one baseline decode step
+
+At small batch sizes (memory-bandwidth bound):
+  v ≈ 1   — streaming weights once covers all k+1 positions; extra positions are cheap
+  This is the regime where speculation is most attractive.
+
+At large batch sizes (approaching compute-bound):
+  v ≈ k+1 — each additional position adds proportional compute;
+             numerator and denominator both scale with k, erasing the gain.
+
+The tables above and most published speedup numbers use v ≈ 1 throughout.
+The later section on batch size explains where this assumption breaks down.</pre>
+
+  <p>
+    Everything that follows in this article — n-gram, draft models, EAGLE, MTP — is a different
+    answer to the same question: how do you minimize c (and keep v ≈ 1) while keeping α high?
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="ngram">N-gram Drafting: Zero Extra Model Cost</h2>
+
+  <p>
+    The cheapest possible drafter costs nothing and runs in microseconds: a lookup table.
+  </p>
+
+  <h3>The Mechanism</h3>
+
+  <p>
+    Before each draft round, take the last N tokens of the current sequence (the "query n-gram")
+    and search the available text — the original prompt, retrieved passages, or previously generated
+    tokens — for that exact sequence. When a match is found, the tokens that follow the match in the
+    source text become the draft. If the match appears multiple times, candidates can be ranked or
+    the first match used.
+  </p>
+
+<div class="diagram">Example: RAG-based Q&A
+
+Retrieved passage (in context):
+  "...the Eiffel Tower was constructed between 1887 and 1889 and
+   stands 330 metres tall at its summit..."
+
+Context generated so far:
+  "The Eiffel Tower was constructed between"
+
+N-gram lookup (n=5, query: "Tower was constructed between"):
+  Match found in passage at position 8!
+  Continuation in passage: "1887", "and", "1889", "and"
+
+Draft tokens: ["1887", "and", "1889", "and"]
+
+Target model verifies in one pass:
+  ✓ "1887"   accepted  (passage and model agree)
+  ✓ "and"    accepted
+  ✓ "1889"   accepted
+  ✓ "and"    accepted  (plus free bonus token)
+
+5 tokens out, drafter cost ≈ 0.</div>
+
+  <h3>Why It Works (and When It Doesn't)</h3>
+
+  <p>
+    N-gram speculation works well when the model's output <em>closely paraphrases or quotes the
+    input</em>. Summarization, RAG question answering, code completion that references surrounding
+    code, and document rewriting are prime examples. In these cases, long stretches of the output
+    are literal substrings of the context, and the n-gram lookup fires repeatedly with high
+    acceptance rates.
+  </p>
+
+  <p>
+    It fails badly when the output is novel. Creative writing, mathematical reasoning, or any task
+    where the model synthesizes rather than recombines input text will produce few n-gram hits. In
+    those cases, the drafter can't propose a match, falls back to single-token generation, and you
+    get no speedup. N-gram speculation is therefore a workload-specific tool, not a universal one.
+  </p>
+
+  <div class="callout blue">
+    <p>
+      <strong>Implementation note:</strong> vLLM calls this <em>prompt lookup decoding</em>,
+      enabled via <code>--speculative-config</code> with <code>"method": "ngram"</code>
+      (the exact JSON keys vary by vLLM version — check the
+      <a href="https://docs.vllm.ai/en/stable/features/spec_decode.html">speculative decoding docs</a>
+      for your release rather than copying flags from here). The lookup is over the prompt and
+      previously generated tokens, with a configurable n-gram window size. Because the drafter
+      cost c&nbsp;≈&nbsp;0, even a moderate acceptance rate (α&nbsp;≈&nbsp;0.5) produces
+      meaningful speedup on compatible workloads.
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="draft-model">Draft Model Drafting: The Classic Approach</h2>
+
+  <p>
+    The original speculative decoding papers used a small model as the drafter — hence
+    "speculative decoding" sometimes being called "speculative sampling with a draft model."
+  </p>
+
+  <h3>The Mechanism</h3>
+
+  <p>
+    Run a small language model autoregressively for k steps to produce k draft tokens. Then run the
+    large target model once to verify them. The small model must share the exact vocabulary and
+    tokenizer with the large model: the acceptance probability formula
+    <code>min(1, p_target(x̃) / p_draft(x̃))</code> compares probabilities over the same token IDs.
+    Different vocabularies make this comparison undefined.
+  </p>
+
+<div class="diagram">Draft model: Llama-3-8B   (c ≈ 8/70 ≈ 0.11 per draft step)
+Target model: Llama-3-70B
+
+k = 4 draft steps:
+  8B step 1 → x̃₁   (cost: 0.11 target steps)
+  8B step 2 → x̃₂   (cost: 0.11)
+  8B step 3 → x̃₃   (cost: 0.11)
+  8B step 4 → x̃₄   (cost: 0.11)
+Total draft cost: 4 × 0.11 = 0.44 target steps
+
+Verification:
+  70B forward pass on [context, x̃₁, x̃₂, x̃₃, x̃₄] → cost: 1 target step
+
+Total cost per round: 0.44 + 1 = 1.44 target steps
+
+If α = 0.80 with k = 4:
+  E[tokens] = (1 − 0.8⁵) / 0.2 ≈ 3.36 tokens
+  Speedup = 3.36 / 1.44 ≈ 2.3×</div>
+
+  <h3>The Acceptance Rate Depends on Distribution Overlap</h3>
+
+  <p>
+    For the 8B-drafts-for-70B setup to work well, the two models' next-token distributions must
+    overlap substantially. When the small model is confident and correct, the acceptance rate is
+    high. When the small and large models disagree — because the large model has learned patterns
+    the small one hasn't — the acceptance rate drops, and so does the speedup.
+  </p>
+
+  <p>
+    In practice, models from the same family trained on similar data (e.g., Llama-3-8B and
+    Llama-3-70B) tend to agree on common continuations, achieving α ≈ 0.7–0.85 on many tasks.
+    Pairing models from different families or training distributions typically produces lower
+    acceptance rates and less speedup.
+  </p>
+
+  <div class="callout">
+    <p>
+      <strong>Key constraint:</strong> the draft model must share the target's vocabulary exactly.
+      A model with even a slightly different tokenizer makes the probability comparison invalid.
+      This also means the draft model's weights sit in GPU memory alongside the target model.
+      For a 70B target in FP16 (140&nbsp;GB) paired with an 8B draft (16&nbsp;GB), the combined
+      weight footprint is ~156&nbsp;GB. On A100 80&nbsp;GB hardware that barely spans two GPUs
+      for weights alone, leaving almost no HBM for KV cache, activations, or runtime overhead.
+      In practice this combination typically requires four A100 80&nbsp;GB GPUs, or quantization
+      to reduce the weight footprint enough to leave usable headroom.
+    </p>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="eagle">EAGLE: Teaching the Model to Draft Itself</h2>
+
+  <p>
+    EAGLE (<a href="https://arxiv.org/abs/2401.15077">Extrapolation Algorithm for Greater
+    Language-model Efficiency</a>, Li et al. 2024) takes a different approach: instead of training
+    a separate small model from scratch, it trains a tiny "draft head" that operates in the target
+    model's own feature space.
+  </p>
+
+  <h3>Why Feature Space Matters</h3>
+
+  <p>
+    The fundamental challenge for any drafter is predicting what the large target model will produce.
+    A small model trained independently has to learn this from scratch. But the target model already
+    encodes exactly the right representation of the sequence at every layer. The
+    <strong>second-to-top-layer features</strong> — the hidden states just before the LM head — are
+    particularly rich: they are exactly what the LM head transforms into next-token probabilities.
+    A drafter that could predict <em>these features</em> rather than raw tokens directly would
+    start from a much stronger position.
+  </p>
+
+  <p>
+    There is one subtlety. Features at position t+1 depend on which token x_{t+1} was actually
+    sampled from the features at position t. Two different sampled tokens produce two different
+    feature vectors at t+1, making pure feature-level autoregression ambiguous. EAGLE resolves
+    this by concatenating the embedding of the just-sampled token with the feature vector: the
+    token disambiguates which branch of the feature trajectory to follow.
+  </p>
+
+  <h3>EAGLE-1: The Feature-Prediction Head</h3>
+
+  <p>
+    EAGLE trains a single additional transformer block — the EAGLE block — that takes as input
+    the concatenation of (a) the target model's second-to-top-layer feature at position t,
+    representing context x₁…x_t, and (b) the embedding of token x_{t+1} (the token that was
+    just sampled from that feature via the LM head). The output is an approximate feature vector
+    for position t+1, from which the shared LM head produces the next draft token's distribution.
+  </p>
+
+<div class="diagram">Standard decode step (slow path):
+
+  [x₁, ..., x_t]  →  [Target Model: layers 1 … L-1]  →  f_t   (second-to-top feature)
+  f_t              →  [LM Head]                        →  p_target(x_{t+1})  →  x_{t+1}
+
+EAGLE draft procedure (fast path, starting from accepted position m):
+
+  After verification: f_m is available (second-to-top feature at m, from target model).
+  LM head(f_m) already produced x̃_{m+1} (sampled from the exact target distribution).
+
+  Draft step 1 → x̃_{m+2}:
+    [f_m ; e(x̃_{m+1})]  →  [EAGLE Block: 1 layer]  →  f̂_{m+1}
+    f̂_{m+1}  →  [Shared LM Head]  →  p_draft(x_{m+2})  →  x̃_{m+2}
+
+  Draft step 2 → x̃_{m+3}:
+    [f̂_{m+1} ; e(x̃_{m+2})]  →  [EAGLE Block]  →  f̂_{m+2}  →  x̃_{m+3}
+
+  ... (k-1 EAGLE steps total; first token x̃_{m+1} came free from the cached LM head output)</div>
+
+  <p>
+    The EAGLE block costs roughly 1/L of a full model forward pass. For a 70B model with
+    80 layers, each EAGLE draft step costs about 1/80 of a target step — an order of magnitude
+    cheaper than an 8B draft model. And because EAGLE drafts from the target's own feature
+    trajectory, acceptance rates tend to be higher: typically α ≈ 0.80–0.90 on chat and code
+    tasks, compared to α ≈ 0.70–0.80 for a same-family draft model.
+  </p>
+
+  <div class="callout blue">
+    <p>
+      <strong>How f_t is obtained:</strong> during the verification forward pass, the target model
+      produces second-to-top-layer features at every accepted position. These are cached. The
+      EAGLE block seeds its next round of drafting from the target's true f_m at the last accepted
+      position — not from its own approximate f̂. Each verification round resets EAGLE to an
+      accurate starting point. The approximation error accumulates only within a single draft window
+      before being corrected.
+    </p>
+  </div>
+
+  <h3>EAGLE-2: From a Static Draft Tree to a Dynamic One</h3>
+
+  <p>
+    EAGLE-1 already uses tree decoding, not a simple linear chain. At each draft depth it expands
+    the top-k token candidates rather than just the single most likely token, building a fixed-topology
+    tree. All nodes in that tree are verified simultaneously by the target model in one forward pass
+    using a tree attention mask (each node attends only to its ancestors, never to sibling branches).
+    The longest valid root-to-leaf path is accepted.
+  </p>
+
+  <p>
+    The tree topology in EAGLE-1 is <em>static</em>: the branching factors at each depth are
+    predetermined regardless of what is being generated. EAGLE-2
+    (<a href="https://arxiv.org/abs/2406.16858">Li et al. 2024b</a>) makes the tree
+    <em>dynamic</em>: it uses a per-node acceptance probability estimate to allocate the total
+    node budget adaptively, expanding confidently-accepted nodes deeper and pruning unlikely ones
+    earlier.
+  </p>
+
+<div class="diagram">EAGLE-1 (static draft tree: fixed branching at each depth):
+
+            ┌── x̃₁ₐ ─┬─ x̃₂ₐₐ
+            │         └─ x̃₂ₐᵦ
+  context ──┤
+            │         ┌─ x̃₂ᵦₐ
+            └── x̃₁ᵦ ─┤
+                      └─ x̃₂ᵦᵦ
+
+  Always 2 candidates at depth 1, 2 at depth 2, regardless of context.
+  Verified in one target-model pass with a tree attention mask.
+
+EAGLE-2 (dynamic draft tree: topology adapts to per-node confidence):
+
+  When depth-1 is clear (x̃₁ₐ is very likely):
+            ┌── x̃₁ₐ ─┬─ x̃₂ₐₐ ─ x̃₃ₐₐₐ  ← expand deeper where confident
+            │         └─ x̃₂ₐᵦ
+  context ──┤
+            └── x̃₁ᵦ   (low confidence; not expanded)
+
+  When depth-1 is ambiguous (several candidates equally likely):
+            ┌── x̃₁ₐ ─ x̃₂ₐ
+  context ──┼── x̃₁ᵦ ─ x̃₂ᵦ   ← widen rather than deepen
+            └── x̃₁꜀ ─ x̃₂꜀
+
+  Same total node budget either way; tree shape responds to generation difficulty.</div>
+
+  <p>
+    EAGLE-2's advantage is that the node budget concentrates where it is most likely to pay off.
+    When the generation is repetitive or predictable, the tree goes deep and captures long accepted
+    runs. When the model is genuinely uncertain at the current position, the tree widens instead
+    of wasting budget on deeper branches that would be pruned anyway.
+    This adaptive behavior typically produces more accepted tokens per verification call
+    than a fixed-topology tree at the same total draft budget.
+  </p>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="mtp">MTP: Baking Speculation into Training</h2>
+
+  <p>
+    All the approaches above treat the target model as fixed and design a drafter around it.
+    Multi-Token Prediction (MTP), as used in <a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3</a>
+    (Liu et al. 2024), takes the opposite approach: modify training so that the model itself learns
+    to predict multiple future tokens simultaneously.
+  </p>
+
+  <h3>The Training Setup</h3>
+
+  <p>
+    After the main transformer trunk produces its final hidden state h_t at each position t,
+    DeepSeek-V3 adds D extra "MTP modules." Each module at depth d is a lightweight block
+    (a single transformer layer with a projection) that takes the previous depth's hidden state
+    and the embedding of the d-th future token, and predicts the (d+1)-th future token.
+  </p>
+
+<div class="diagram">Training forward pass at position t (D=2 MTP modules):
+
+x₁,...,x_t  →  [Main Transformer Trunk]  →  h_t
+
+Main head:                              MTP Module 1:
+  h_t  →  [LM Head]  →  p(x_{t+1})      (h_t, embed(x_{t+1}))  →  [MTP Block 1]  →  h_t⁽¹⁾
+  loss: cross-entropy vs x_{t+1}         h_t⁽¹⁾  →  [LM Head]  →  p(x_{t+2})
+                                          loss: cross-entropy vs x_{t+2}
+
+                                        MTP Module 2:
+                                          (h_t⁽¹⁾, embed(x_{t+2}))  →  [MTP Block 2]  →  h_t⁽²⁾
+                                          h_t⁽²⁾  →  [LM Head]  →  p(x_{t+3})
+                                          loss: cross-entropy vs x_{t+3}
+
+Total training loss = main loss + λ₁ × MTP-1 loss + λ₂ × MTP-2 loss
+                     (DeepSeek-V3 uses λ = 0.1 and D = 1 for the released model)</div>
+
+  <p>
+    During training, x_{t+1}, x_{t+2}, x_{t+3} are all known (they're in the training sequence),
+    so every MTP module can be supervised directly. The MTP loss encourages the trunk to produce
+    hidden states that are useful not just for predicting the immediately next token but for
+    predicting several tokens ahead. This is a form of auxiliary task that regularizes the
+    representations toward multi-step prediction.
+  </p>
+
+  <h3>The Inference Procedure</h3>
+
+  <p>
+    At inference time, the MTP modules serve as a built-in drafter — one that runs as a
+    lightweight extension of the main model's forward pass, not as a separate call.
+  </p>
+
+<div class="diagram">Inference at position T (speculation round):
+
+Step 1 — Main forward pass on context x₁,...,x_T:
+  →  h_T  →  main head  →  sample x_{T+1}  (this is the main model's prediction)
+  →  MTP Module 1: (h_T, embed(x_{T+1}))  →  h_T⁽¹⁾  →  sample x̃_{T+2}  (draft)
+  →  MTP Module 2: (h_T⁽¹⁾, embed(x̃_{T+2}))  →  sample x̃_{T+3}  (draft)
+
+  x_{T+1} is a definite sample (from main head).
+  x̃_{T+2}, x̃_{T+3} are speculative drafts (from MTP modules).
+
+Step 2 — Verification forward pass on [x₁,...,x_T, x_{T+1}, x̃_{T+2}, x̃_{T+3}]:
+  Main model at position T+1 → p_target(x_{T+2})  → verify x̃_{T+2}
+  Main model at position T+2 → p_target(x_{T+3})  → verify x̃_{T+3}
+  Accept/reject in order (same speculative sampling as before)
+
+Step 3 — MTP modules re-run on the newly accepted tokens to draft for the next round.</div>
+
+  <h3>What MTP Buys</h3>
+
+  <p>
+    The key advantage over draft models is that MTP requires no separate model checkpoint or
+    dedicated draft forward pass. The MTP modules — each roughly one transformer block —
+    run as a lightweight tail after the main trunk and are loaded alongside it. No separate
+    draft call, no separate KV cache, no separate model weights to manage. The integration is
+    tighter than EAGLE's because the modules were trained jointly with the trunk they consume;
+    there is no distribution mismatch between the features MTP receives and what it was
+    trained on.
+  </p>
+
+  <p>
+    Equally important: the MTP modules are trained end-to-end with the same trunk they'll use at
+    inference. There is no distribution mismatch between the drafter and the context it operates
+    in. The trunk's hidden states h_T are exactly what the MTP modules were trained to consume.
+    This is why DeepSeek-V3 reports high acceptance rates from MTP-based speculation, even with
+    only D=1 module (predicting just one step ahead beyond the main head).
+  </p>
+
+  <div class="callout blue">
+    <p>
+      <strong>Training benefit beyond inference:</strong> the MTP auxiliary loss also improves the
+      main model's representations. By learning to predict further ahead from h_t, the trunk develops
+      richer contextual encodings that sometimes improve the main next-token prediction as well.
+      DeepSeek-V3 reports that MTP training improves benchmark performance on several tasks even
+      when the MTP heads are discarded at inference.
+    </p>
+  </div>
+
+  <h3>MTP vs EAGLE: What's the Difference?</h3>
+
+  <p>
+    Both MTP and EAGLE train a lightweight auxiliary block that predicts future tokens using the
+    target model's hidden states. The differences are in how and when they integrate:
+  </p>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th scope="col"></th>
+        <th scope="col">EAGLE</th>
+        <th scope="col">MTP (DeepSeek-V3)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>When trained?</td>
+        <td>After target model is fixed; only the EAGLE block is trained</td>
+        <td>During pretraining; trunk and MTP modules trained jointly</td>
+      </tr>
+      <tr>
+        <td>What does it consume?</td>
+        <td>h_t from last verification pass (target model's true hidden state)</td>
+        <td>h_T from end of main forward pass (same step)</td>
+      </tr>
+      <tr>
+        <td>Execution model</td>
+        <td>Separate EAGLE block runs after verification, before next round</td>
+        <td>MTP modules run at the end of every main forward pass</td>
+      </tr>
+      <tr>
+        <td>Target model required?</td>
+        <td>Yes, must have access to target's hidden states</td>
+        <td>Built into the model; no separate access needed</td>
+      </tr>
+      <tr>
+        <td>Flexibility</td>
+        <td>Can be trained and attached to any existing frozen model</td>
+        <td>Requires the model to have been trained with MTP from the start</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="comparison">Comparing the Approaches</h2>
+
+  <div class="table-wrap">
+  <table>
+    <caption style="caption-side:bottom; font-size:0.82rem; color:#6b7280; text-align:left; padding-top:8px;">
+      Typical ranges from published results on chat/code tasks at batch size 1. Actual speedup depends
+      on model, hardware, task, and output length. Acceptance rates are approximate and vary significantly
+      by workload — verify with your own distribution before committing to a deployment choice.
+    </caption>
+    <thead>
+      <tr>
+        <th scope="col">Approach</th>
+        <th scope="col">Extra memory</th>
+        <th scope="col">Draft cost c per step</th>
+        <th scope="col">Typical α</th>
+        <th scope="col">Best for</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>N-gram</strong></td>
+        <td>Negligible (lookup table)</td>
+        <td>≈ 0</td>
+        <td>0.4–0.85 (input-dependent)</td>
+        <td>RAG, summarization, code with heavy context reuse</td>
+      </tr>
+      <tr>
+        <td><strong>Draft model</strong></td>
+        <td>Full small-model weights (e.g., 16 GB for 8B)</td>
+        <td>≈ small / large ratio (~0.11 for 8B/70B)</td>
+        <td>0.65–0.80</td>
+        <td>General purpose; same-family model pair available</td>
+      </tr>
+      <tr>
+        <td><strong>EAGLE-1</strong></td>
+        <td>~1–2% of target (one transformer block)</td>
+        <td>≈ 1/L (~0.012 for 80-layer model)</td>
+        <td>0.78–0.90</td>
+        <td>General purpose; frozen target, post-hoc attachment</td>
+      </tr>
+      <tr>
+        <td><strong>EAGLE-2</strong></td>
+        <td>Same as EAGLE-1</td>
+        <td>≈ 1/L (tree-adaptive; often fewer nodes than k)</td>
+        <td>0.82–0.95</td>
+        <td>Best general-purpose single-stream speedup for frozen models</td>
+      </tr>
+      <tr>
+        <td><strong>MTP</strong></td>
+        <td>D MTP blocks (~D/L of target, small)</td>
+        <td>≈ D/L (runs inside the main forward pass)</td>
+        <td>0.75–0.90</td>
+        <td>Models pretrained with MTP; tightest integration, no separate call</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════════ -->
+  <h2 id="when">When Does Speculation Actually Help?</h2>
+
+  <p>
+    The speedup analysis so far assumes the verification step costs the same as a regular
+    single-token decode. That's approximately true at <em>small batch sizes</em>, where the GPU is
+    memory-bandwidth-bound and extra token positions in a forward pass barely change the cost.
+    At large batch sizes the picture changes.
+  </p>
+
+  <h3>Batch Size is the Key Variable</h3>
+
+  <p>
+    When you're running at batch size 1 (one concurrent sequence), each decode step loads the full
+    weight matrix to produce one token. Compute units are nearly idle. The verification step — which
+    processes the original context plus k draft tokens — loads weights once and produces k+1
+    position outputs. The cost is dominated by the weight loading, not by the number of output
+    positions. The speedup table above applies.
+  </p>
+
+  <p>
+    When you're running at large batch sizes (e.g., 64 concurrent sequences), the GPU starts
+    becoming compute-bound. Each decode step processes 64 sequences simultaneously, which is already
+    a larger matrix multiply. The verification step now processes 64 × (k+1) positions — a
+    proportionally larger computation. The arithmetic intensity rises, and the assumption
+    "verification costs roughly 1 step" breaks down. The denominator in the speedup formula grows
+    while the numerator stays bounded. At large enough batch sizes, speculation actively hurts
+    throughput.
+  </p>
+
+<div class="diagram">Batch size 1 (memory-bandwidth bound):
+  One decode step:  stream 140 GB weights → produce 1 token × 1 sequence
+  Verify step:      stream 140 GB weights → produce k+1 tokens × 1 sequence
+  Cost ratio:       ~1.0  (bandwidth dominates; extra positions are free)
+  Speculation:      helps
+
+Batch size 64 (approaching compute-bound):
+  One decode step:  stream 140 GB weights → produce 1 token × 64 sequences
+  Verify step:      stream 140 GB weights → produce (k+1) tokens × 64 sequences
+  Cost ratio:       ~(k+1)/1  (more work per batch entry; positions are no longer free)
+  Speculation:      helps less; may hurt at very large batch + large k
+
+Rule of thumb:
+  Speculation is most useful at batch sizes 1–16, where LLM decode is
+  memory-bandwidth-bound at the step level.
+  At batch sizes 32+ for large models, measure carefully before deploying.</div>
+
+  <h3>The Mental Model: When to Reach for Each Tool</h3>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr>
+        <th scope="col">Situation</th>
+        <th scope="col">Recommended approach</th>
+        <th scope="col">Why</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Real-time single-stream chat (batch ≈ 1)</td>
+        <td>EAGLE-2 or MTP (if model supports it)</td>
+        <td>Highest α; memory-bandwidth bound; every token of latency matters</td>
+      </tr>
+      <tr>
+        <td>RAG / summarization workload</td>
+        <td>N-gram first; EAGLE-2 as fallback</td>
+        <td>N-gram hits fire frequently on context-reusing outputs; near-zero overhead</td>
+      </tr>
+      <tr>
+        <td>Same-family model pair already deployed</td>
+        <td>Draft model</td>
+        <td>May already be in memory; straightforward to enable; no extra training needed</td>
+      </tr>
+      <tr>
+        <td>Frozen target model, no pretraining budget</td>
+        <td>EAGLE (train the head on your own data)</td>
+        <td>Best acceptance rate achievable without retraining the full model</td>
+      </tr>
+      <tr>
+        <td>Large batch offline inference (&gt;32 sequences)</td>
+        <td>Benchmark before enabling speculation</td>
+        <td>Gains diminish; verification step grows proportionally with batch</td>
+      </tr>
+      <tr>
+        <td>Model trained with MTP</td>
+        <td>Enable built-in MTP speculation</td>
+        <td>No separate draft model checkpoint or dedicated draft forward pass; MTP modules add lightweight blocks but no extra model load</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="callout green">
+    <p>
+      <strong>Verify on your own workload.</strong> Published speedups are measured on specific
+      models, hardware, batch sizes, and task distributions. The acceptance rate α is the single
+      most important variable, and it varies enormously across tasks. A 3× speedup on a benchmark
+      chat dataset tells you little about whether speculation will help your specific RAG pipeline
+      or code assistant. Measure α and end-to-end latency on a representative sample of your real
+      traffic before committing to a drafter choice.
+    </p>
+  </div>
+
+  <hr />
+
+  <h2>Further Reading</h2>
+
+  <ul>
+    <li><a href="https://arxiv.org/abs/2211.17192">Fast Inference from Transformers via Speculative Decoding</a>. Leviathan, Kalman, Matias (Google DeepMind, 2023). The original paper proving the algorithm is lossless and deriving the expected-tokens formula.</li>
+    <li><a href="https://arxiv.org/abs/2302.01318">Accelerating Large Language Model Decoding with Speculative Sampling</a>. Chen, Borgeaud, Irving, Lespiau, Sifre, Jumper (DeepMind, 2023). Concurrent work from DeepMind introducing speculative sampling.</li>
+    <li><a href="https://arxiv.org/abs/2401.15077">EAGLE: Speculative Sampling Requires Rethinking Feature Uncertainty</a>. Li, Geng, Meng, Zhang, Miao, Shi (2024). The paper introducing feature-space drafting. Section 3 is the key read for the mechanism.</li>
+    <li><a href="https://arxiv.org/abs/2406.16858">EAGLE-2: Faster Inference of Language Models with Dynamic Draft Trees</a>. Li, Geng, Meng, Zhang, Miao, Shi (2024). Extends EAGLE with adaptive tree construction and acceptance-rate-aware pruning.</li>
+    <li><a href="https://arxiv.org/abs/2412.19437">DeepSeek-V3 Technical Report</a>. Liu et al. (2024). Section 2.2 covers the MTP training setup; Appendix D describes the speculative decoding inference procedure in detail.</li>
+    <li><a href="https://docs.vllm.ai/en/stable/features/spec_decode.html">vLLM Speculative Decoding documentation</a>. Covers configuration for all major drafter types: draft models, n-gram (prompt lookup), and EAGLE.</li>
+    <li><a href="https://arxiv.org/abs/2310.08461">Online Speculative Decoding</a>. Liu et al. (2023). Extends the basic algorithm to continuously update the draft model online using target model outputs, improving acceptance rates over time.</li>
+  </ul>
+
+  <div class="footer">
+    <p>Written by Rohan. The speculative sampling algorithm and lossless correctness proof are from Leviathan et al. (2023) and Chen et al. (2023). EAGLE and EAGLE-2 are from Li et al. (2024). MTP details from the DeepSeek-V3 Technical Report (2024). Acceptance rate ranges are approximate; measure on your own workload and model version before reporting speedup claims.</p>
+  </div>
+
+</div>
+</article>
+</main>
+</body>
+</html>

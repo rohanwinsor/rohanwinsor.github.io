@@ -323,7 +323,7 @@
     2&nbsp;TB/s peak HBM bandwidth, an 8B decode step has an idealized lower bound of ~8&nbsp;ms
     of memory traffic per token at batch size 1. In practice, weight streaming and compute
     overlap partially, but the arithmetic intensity of a single-token decode at small batch sizes is
-    roughly 1–2&nbsp;FLOPs/byte — about 100× below the A100's ridge point of ~156&nbsp;FLOPs/byte.
+    roughly 1–2&nbsp;FLOPs/byte about 100× below the A100's ridge point of ~156&nbsp;FLOPs/byte.
     This is squarely memory-bandwidth-bound.
   </p>
 
@@ -335,8 +335,8 @@
   <div class="callout red">
     <p>
       <strong>The single-stream problem:</strong> at batch size 1, a decode step loads the
-      model's full weight matrix — 16&nbsp;GB for an 8B model, 140&nbsp;GB aggregate for a 70B
-      across its GPUs — to produce one token. The compute units could have run 156× more
+      model's full weight matrix 16&nbsp;GB for an 8B model, 140&nbsp;GB aggregate for a 70B
+      across its GPUs to produce one token. The compute units could have run 156× more
       arithmetic in the time the bus took to deliver the weights. Almost all of that compute
       capacity goes to waste.
     </p>
@@ -357,7 +357,7 @@
 
   <p>
     <strong>Verifying</strong> k proposed tokens requires only one forward pass. You feed the model
-    the full sequence — context plus the k candidates — and the model evaluates all positions
+    the full sequence context plus the k candidates and the model evaluates all positions
     simultaneously. The attention mechanism already processes all positions in parallel in a single
     pass; that's how prefill works. At the end of this single forward pass, you know, for every
     candidate token, what probability the large model assigns to it given its predecessors.
@@ -391,7 +391,7 @@
 
   <p>
     The current context is <strong>"The capital of France is"</strong>. We want to generate the
-    next several tokens. We have a drafter (whatever mechanism — we'll discuss the options shortly)
+    next several tokens. We have a drafter (whatever mechanism we'll discuss the options shortly)
     and a large target model.
   </p>
 
@@ -414,7 +414,7 @@ Draft sequence: ["Paris", ",", "known", "for"]</div>
 
   <p>
     The target model processes the 4 draft tokens in a single forward pass, attending over the full
-    sequence but only computing new KV entries for the draft positions — the original context's
+    sequence but only computing new KV entries for the draft positions the original context's
     KV cache is already populated from prior decode steps. This is more like a short decode pass
     for k&nbsp;=&nbsp;4 positions than a full prefill from scratch. Because only 4 new positions
     need computation (with attention back to the cached context), this pass costs roughly the same
@@ -473,7 +473,7 @@ Token 3: "known"
     ...
   Normalize → sample → "the"
 
-Token 4: "for" — DISCARDED (we stopped at the first rejection)</div>
+Token 4: "for" DISCARDED (we stopped at the first rejection)</div>
 
   <h3>Result</h3>
 
@@ -495,7 +495,7 @@ SPECULATIVE DECODING (same three tokens):
     ✓ "Paris"   accepted
     ✓ ","       accepted
     ✗ "known"   rejected → "the" (sampled from adjusted dist)
-    — "for"     discarded
+    "for"     discarded
   Cost: 4 × (cheap draft) + 1 × (load 140 GB weights)
 
 If drafter cost ≪ target cost: roughly 3 tokens for the price of ~1 target step.</div>
@@ -503,9 +503,9 @@ If drafter cost ≪ target cost: roughly 3 tokens for the price of ~1 target ste
   <div class="callout green">
     <p>
       <strong>Correctness guarantee:</strong> the algorithm as a whole samples from exactly
-      p_target — but the mechanism on rejection is subtler than sampling directly from p_target.
+      p_target but the mechanism on rejection is subtler than sampling directly from p_target.
       The corrected token is drawn from the <em>residual distribution</em>
-      max(0,&nbsp;p_target&nbsp;−&nbsp;p_draft)&nbsp;/&nbsp;Z — the probability mass that the
+      max(0,&nbsp;p_target&nbsp;−&nbsp;p_draft)&nbsp;/&nbsp;Z the probability mass that the
       target assigns beyond what the drafter already covered. The combination of accepted-draft
       probability and residual-sample probability integrates to p_target at every position. This
       is what Leviathan et al. and Chen et al. prove: the speculative sampling process is
@@ -516,8 +516,8 @@ If drafter cost ≪ target cost: roughly 3 tokens for the price of ~1 target ste
   <h3>The Bonus Token</h3>
 
   <p>
-    Notice that the target model's forward pass produced logits at position n+4 — the position
-    after the last draft token — as a byproduct. If all k draft tokens had been accepted, those
+    Notice that the target model's forward pass produced logits at position n+4 the position
+    after the last draft token as a byproduct. If all k draft tokens had been accepted, those
     logits would give us a <em>free bonus token</em>: k+1 tokens from one verification step.
     This bonus is why the expected output per step slightly exceeds k even when α is high.
   </p>
@@ -585,18 +585,18 @@ where k = number of draft tokens per round</pre>
 where v = cost of the verification step relative to one baseline decode step
 
 At small batch sizes (memory-bandwidth bound):
-  v ≈ 1   — streaming weights once covers all k+1 positions; extra positions are cheap
+  v ≈ 1   streaming weights once covers all k+1 positions; extra positions are cheap
   This is the regime where speculation is most attractive.
 
 At large batch sizes (approaching compute-bound):
-  v ≈ k+1 — each additional position adds proportional compute;
+  v ≈ k+1 each additional position adds proportional compute;
              numerator and denominator both scale with k, erasing the gain.
 
 The tables above and most published speedup numbers use v ≈ 1 throughout.
 The later section on batch size explains where this assumption breaks down.</pre>
 
   <p>
-    Everything that follows in this article — n-gram, draft models, EAGLE, MTP — is a different
+    Everything that follows in this article n-gram, draft models, EAGLE, MTP is a different
     answer to the same question: how do you minimize c (and keep v ≈ 1) while keeping α high?
   </p>
 
@@ -611,8 +611,8 @@ The later section on batch size explains where this assumption breaks down.</pre
 
   <p>
     Before each draft round, take the last N tokens of the current sequence (the "query n-gram")
-    and search the available text — the original prompt, retrieved passages, or previously generated
-    tokens — for that exact sequence. When a match is found, the tokens that follow the match in the
+    and search the available text the original prompt, retrieved passages, or previously generated
+    tokens for that exact sequence. When a match is found, the tokens that follow the match in the
     source text become the draft. If the match appears multiple times, candidates can be ranked or
     the first match used.
   </p>
@@ -661,7 +661,7 @@ Target model verifies in one pass:
     <p>
       <strong>Implementation note:</strong> vLLM calls this <em>prompt lookup decoding</em>,
       enabled via <code>--speculative-config</code> with <code>"method": "ngram"</code>
-      (the exact JSON keys vary by vLLM version — check the
+      (the exact JSON keys vary by vLLM version check the
       <a href="https://docs.vllm.ai/en/stable/features/spec_decode.html">speculative decoding docs</a>
       for your release rather than copying flags from here). The lookup is over the prompt and
       previously generated tokens, with a configurable n-gram window size. Because the drafter
@@ -674,7 +674,7 @@ Target model verifies in one pass:
   <h2 id="draft-model">Draft Model Drafting: The Classic Approach</h2>
 
   <p>
-    The original speculative decoding papers used a small model as the drafter — hence
+    The original speculative decoding papers used a small model as the drafter hence
     "speculative decoding" sometimes being called "speculative sampling with a draft model."
   </p>
 
@@ -712,8 +712,8 @@ If α = 0.80 with k = 4:
   <p>
     For the 8B-drafts-for-70B setup to work well, the two models' next-token distributions must
     overlap substantially. When the small model is confident and correct, the acceptance rate is
-    high. When the small and large models disagree — because the large model has learned patterns
-    the small one hasn't — the acceptance rate drops, and so does the speedup.
+    high. When the small and large models disagree because the large model has learned patterns
+    the small one hasn't the acceptance rate drops, and so does the speedup.
   </p>
 
   <p>
@@ -752,7 +752,7 @@ If α = 0.80 with k = 4:
     The fundamental challenge for any drafter is predicting what the large target model will produce.
     A small model trained independently has to learn this from scratch. But the target model already
     encodes exactly the right representation of the sequence at every layer. The
-    <strong>second-to-top-layer features</strong> — the hidden states just before the LM head — are
+    <strong>second-to-top-layer features</strong> the hidden states just before the LM head are
     particularly rich: they are exactly what the LM head transforms into next-token probabilities.
     A drafter that could predict <em>these features</em> rather than raw tokens directly would
     start from a much stronger position.
@@ -769,7 +769,7 @@ If α = 0.80 with k = 4:
   <h3>EAGLE-1: The Feature-Prediction Head</h3>
 
   <p>
-    EAGLE trains a single additional transformer block — the EAGLE block — that takes as input
+    EAGLE trains a single additional transformer block the EAGLE block that takes as input
     the concatenation of (a) the target model's second-to-top-layer feature at position t,
     representing context x₁…x_t, and (b) the embedding of token x_{t+1} (the token that was
     just sampled from that feature via the LM head). The output is an approximate feature vector
@@ -797,7 +797,7 @@ EAGLE draft procedure (fast path, starting from accepted position m):
 
   <p>
     The EAGLE block costs roughly 1/L of a full model forward pass. For a 70B model with
-    80 layers, each EAGLE draft step costs about 1/80 of a target step — an order of magnitude
+    80 layers, each EAGLE draft step costs about 1/80 of a target step an order of magnitude
     cheaper than an 8B draft model. And because EAGLE drafts from the target's own feature
     trajectory, acceptance rates tend to be higher: typically α ≈ 0.80–0.90 on chat and code
     tasks, compared to α ≈ 0.70–0.80 for a same-family draft model.
@@ -808,7 +808,7 @@ EAGLE draft procedure (fast path, starting from accepted position m):
       <strong>How f_t is obtained:</strong> during the verification forward pass, the target model
       produces second-to-top-layer features at every accepted position. These are cached. The
       EAGLE block seeds its next round of drafting from the target's true f_m at the last accepted
-      position — not from its own approximate f̂. Each verification round resets EAGLE to an
+      position not from its own approximate f̂. Each verification round resets EAGLE to an
       accurate starting point. The approximation error accumulates only within a single draft window
       before being corrected.
     </p>
@@ -916,13 +916,13 @@ Total training loss = main loss + λ₁ × MTP-1 loss + λ₂ × MTP-2 loss
   <h3>The Inference Procedure</h3>
 
   <p>
-    At inference time, the MTP modules serve as a built-in drafter — one that runs as a
+    At inference time, the MTP modules serve as a built-in drafter one that runs as a
     lightweight extension of the main model's forward pass, not as a separate call.
   </p>
 
 <div class="diagram">Inference at position T (speculation round):
 
-Step 1 — Main forward pass on context x₁,...,x_T:
+Step 1 Main forward pass on context x₁,...,x_T:
   →  h_T  →  main head  →  sample x_{T+1}  (this is the main model's prediction)
   →  MTP Module 1: (h_T, embed(x_{T+1}))  →  h_T⁽¹⁾  →  sample x̃_{T+2}  (draft)
   →  MTP Module 2: (h_T⁽¹⁾, embed(x̃_{T+2}))  →  sample x̃_{T+3}  (draft)
@@ -930,18 +930,18 @@ Step 1 — Main forward pass on context x₁,...,x_T:
   x_{T+1} is a definite sample (from main head).
   x̃_{T+2}, x̃_{T+3} are speculative drafts (from MTP modules).
 
-Step 2 — Verification forward pass on [x₁,...,x_T, x_{T+1}, x̃_{T+2}, x̃_{T+3}]:
+Step 2 Verification forward pass on [x₁,...,x_T, x_{T+1}, x̃_{T+2}, x̃_{T+3}]:
   Main model at position T+1 → p_target(x_{T+2})  → verify x̃_{T+2}
   Main model at position T+2 → p_target(x_{T+3})  → verify x̃_{T+3}
   Accept/reject in order (same speculative sampling as before)
 
-Step 3 — MTP modules re-run on the newly accepted tokens to draft for the next round.</div>
+Step 3 MTP modules re-run on the newly accepted tokens to draft for the next round.</div>
 
   <h3>What MTP Buys</h3>
 
   <p>
     The key advantage over draft models is that MTP requires no separate model checkpoint or
-    dedicated draft forward pass. The MTP modules — each roughly one transformer block —
+    dedicated draft forward pass. The MTP modules each roughly one transformer block —
     run as a lightweight tail after the main trunk and are loaded alongside it. No separate
     draft call, no separate KV cache, no separate model weights to manage. The integration is
     tighter than EAGLE's because the modules were trained jointly with the trunk they consume;
@@ -1021,7 +1021,7 @@ Step 3 — MTP modules re-run on the newly accepted tokens to draft for the next
     <caption style="caption-side:bottom; font-size:0.82rem; color:#6b7280; text-align:left; padding-top:8px;">
       Typical ranges from published results on chat/code tasks at batch size 1. Actual speedup depends
       on model, hardware, task, and output length. Acceptance rates are approximate and vary significantly
-      by workload — verify with your own distribution before committing to a deployment choice.
+      by workload verify with your own distribution before committing to a deployment choice.
     </caption>
     <thead>
       <tr>
@@ -1086,8 +1086,8 @@ Step 3 — MTP modules re-run on the newly accepted tokens to draft for the next
 
   <p>
     When you're running at batch size 1 (one concurrent sequence), each decode step loads the full
-    weight matrix to produce one token. Compute units are nearly idle. The verification step — which
-    processes the original context plus k draft tokens — loads weights once and produces k+1
+    weight matrix to produce one token. Compute units are nearly idle. The verification step which
+    processes the original context plus k draft tokens loads weights once and produces k+1
     position outputs. The cost is dominated by the weight loading, not by the number of output
     positions. The speedup table above applies.
   </p>
@@ -1095,7 +1095,7 @@ Step 3 — MTP modules re-run on the newly accepted tokens to draft for the next
   <p>
     When you're running at large batch sizes (e.g., 64 concurrent sequences), the GPU starts
     becoming compute-bound. Each decode step processes 64 sequences simultaneously, which is already
-    a larger matrix multiply. The verification step now processes 64 × (k+1) positions — a
+    a larger matrix multiply. The verification step now processes 64 × (k+1) positions a
     proportionally larger computation. The arithmetic intensity rises, and the assumption
     "verification costs roughly 1 step" breaks down. The denominator in the speedup formula grows
     while the numerator stays bounded. At large enough batch sizes, speculation actively hurts
